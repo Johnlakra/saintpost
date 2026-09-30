@@ -40,7 +40,8 @@ export const config = {
   youtubeClientId: process.env.YOUTUBE_CLIENT_ID || '',
   youtubeClientSecret: process.env.YOUTUBE_CLIENT_SECRET || '',
 
-  // Feature Flags
+  // Feature Flags & Language Options
+  defaultLanguage: (process.env.DEFAULT_LANGUAGE || 'hi') as 'hi' | 'en' | 'pa',
   enableVideoGeneration: process.env.ENABLE_VIDEO_GENERATION !== 'false',
   enableVoiceover: process.env.ENABLE_VOICEOVER !== 'false',
   enableMusic: process.env.ENABLE_MUSIC !== 'false',

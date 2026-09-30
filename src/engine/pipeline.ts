@@ -5,6 +5,7 @@ import { VideoService } from '../services/videoService.js';
 import { TTSService } from '../services/ttsService.js';
 import { VideoAssemblyService } from '../services/videoAssemblyService.js';
 import { PublishingService } from '../services/publishingService.js';
+import { config } from '../config/env.js';
 import { db } from '../db/index.js';
 
 export interface PipelineResult {
@@ -36,11 +37,14 @@ export class SaintPostPipeline {
   }
 
   /**
-   * Executes the complete 10-Step Automated Flow for a saint
+   * Executes the complete 10-Step Automated Flow for a saint in Simple Hindi (Default), English, or Punjabi
    */
-  async runPipelineForSaint(saintInput?: SaintRecord | string): Promise<PipelineResult> {
+  async runPipelineForSaint(
+    saintInput?: SaintRecord | string,
+    targetLang: 'en' | 'hi' | 'pa' = config.defaultLanguage || 'hi'
+  ): Promise<PipelineResult> {
     console.log(`\n======================================================`);
-    console.log(`🚀 STARTING SAINTPOST AUTOMATION PIPELINE`);
+    console.log(`🚀 STARTING SAINTPOST AUTOMATION PIPELINE [LANG: ${targetLang.toUpperCase()}]`);
     console.log(`======================================================\n`);
 
     // STEP 1: FETCH SAINT DATA
@@ -54,9 +58,9 @@ export class SaintPostPipeline {
     }
     console.log(`✅ Step 1: Loaded Saint Data -> ${saint.name}`);
 
-    // STEP 2: GENERATE CONTENT (LLM)
-    const content = await this.llmService.generateSaintContentPackage(saint);
-    console.log(`✅ Step 2: LLM Content Generated (${content.video_script.length} scenes)`);
+    // STEP 2: GENERATE CONTENT (LLM in Target Language)
+    const content = await this.llmService.generateSaintContentPackage(saint, targetLang);
+    console.log(`✅ Step 2: LLM Content Generated (${content.video_script.length} scenes in ${targetLang.toUpperCase()})`);
 
     // STEP 3: GENERATE CHARACTER SHEET
     const charSheetResult = await this.visualService.generateCharacterSheet(saint);
@@ -87,12 +91,12 @@ export class SaintPostPipeline {
     }
     console.log(`✅ Step 5: ${clipPaths.length} Video Clips Generated`);
 
-    // STEP 6: GENERATE VOICEOVER & SUBTITLES
-    const ttsResult = await this.ttsService.generateVoiceover(content.full_story, saint.name);
-    console.log(`✅ Step 6: Voiceover Audio & Subtitles Generated`);
+    // STEP 6: GENERATE VOICEOVER & SUBTITLES IN TARGET LANGUAGE
+    const ttsResult = await this.ttsService.generateVoiceover(content.full_story, saint.name, targetLang);
+    console.log(`✅ Step 6: Voiceover Audio & Subtitles Generated (${targetLang.toUpperCase()})`);
 
     // STEP 7: ASSEMBLE VIDEO (FFmpeg)
-    const outputFileName = `saintpost_${saint.name.toLowerCase().replace(/[^a-z0-9]/g, '_')}_${Date.now()}.mp4`;
+    const outputFileName = `saintpost_${saint.name.toLowerCase().replace(/[^a-z0-9]/g, '_')}_${targetLang}_${Date.now()}.mp4`;
     const finalVideoUrl = await this.assemblyService.assembleFinalVideo({
       videoClips: clipPaths,
       voiceoverAudioPath: ttsResult.audioPath,
@@ -102,7 +106,7 @@ export class SaintPostPipeline {
     console.log(`✅ Step 7: Final 9:16 MP4 Video Rendered -> ${finalVideoUrl}`);
 
     // STEP 8: CAPTION & HASHTAG PREPARATION
-    console.log(`✅ Step 8: Caption Prepared (${content.caption.length} chars, 30 hashtags)`);
+    console.log(`✅ Step 8: Caption Prepared (${content.caption.length} chars, 30 hashtags in ${targetLang.toUpperCase()})`);
 
     // STEP 9: PUBLISH TO CONNECTED ACCOUNTS
     const publishResult = await this.publishingService.publishToAllActiveAccounts({
@@ -117,11 +121,12 @@ export class SaintPostPipeline {
     // STEP 10: SAVE RECORD TO NEON DB
     try {
       await db.query(
-        `INSERT INTO posts (platform, post_type, video_url, cover_image_url, caption, hashtags, status)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        `INSERT INTO posts (platform, post_type, language, video_url, cover_image_url, caption, hashtags, status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
         [
           'multi-platform',
           saintInput ? 'on_demand' : 'daily_feast',
+          targetLang,
           finalVideoUrl,
           coverImageUrl,
           content.caption,
@@ -133,7 +138,7 @@ export class SaintPostPipeline {
       console.warn('⚠️ Neon DB post logging warning:', e.message);
     }
 
-    console.log(`\n🎉 SAINTPOST PIPELINE COMPLETED SUCCESSFULLY FOR ${saint.name}!\n`);
+    console.log(`\n🎉 SAINTPOST PIPELINE COMPLETED SUCCESSFULLY FOR ${saint.name} [LANG: ${targetLang.toUpperCase()}]!\n`);
 
     return {
       saint,

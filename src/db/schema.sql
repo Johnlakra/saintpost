@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS accounts (
     token_expires_at TIMESTAMP,
     logo_url TEXT,                    -- per-account logo overlay
     brand_color VARCHAR(7) DEFAULT '#8A2BE2', -- hex color for overlays
+    language VARCHAR(10) DEFAULT 'en', -- 'en', 'hi', 'pa'
     is_active BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW()
@@ -41,6 +42,7 @@ CREATE TABLE IF NOT EXISTS posts (
     account_id INT REFERENCES accounts(id),
     platform VARCHAR(20) NOT NULL,
     post_type VARCHAR(20) NOT NULL,   -- 'daily_feast', 'on_demand'
+    language VARCHAR(10) DEFAULT 'en', -- 'en', 'hi', 'pa'
     video_url TEXT,                   -- rendered MP4 URL
     cover_image_url TEXT,
     caption TEXT,

@@ -26,13 +26,17 @@ export class TTSService {
   }
 
   /**
-   * Generates voiceover narration using Microsoft Edge TTS (100% Free) or fallback synthesizers
+   * Generates voiceover narration using Microsoft Edge TTS in Hindi (Default), English, or Punjabi
    */
-  async generateVoiceover(text: string, saintName: string): Promise<TTSResult> {
-    console.log(`🎙️ Generating voiceover narration for ${saintName}...`);
+  async generateVoiceover(
+    text: string,
+    saintName: string,
+    targetLang: 'en' | 'hi' | 'pa' = config.defaultLanguage || 'hi'
+  ): Promise<TTSResult> {
+    console.log(`🎙️ Generating voiceover narration for ${saintName} [Lang: ${targetLang.toUpperCase()}]...`);
 
     const sanitizedName = saintName.toLowerCase().replace(/[^a-z0-9]/g, '_');
-    const fileName = `narration_${sanitizedName}_${Date.now()}.mp3`;
+    const fileName = `narration_${sanitizedName}_${targetLang}_${Date.now()}.mp3`;
     const audioPath = path.join(this.outputDir, fileName);
     const audioUrl = `${config.renderExternalUrl}/audio/${fileName}`;
 
@@ -42,22 +46,30 @@ export class TTSService {
       return { audioPath, audioUrl };
     }
 
+    // Voice Selection Mapping based on target language
+    const voiceMap: Record<string, string> = {
+      en: config.edgeTtsVoice || 'en-US-AriaNeural',
+      hi: 'hi-IN-SwaraNeural',
+      pa: 'pa-IN-OjasNeural',
+    };
+
+    const voice = voiceMap[targetLang] || voiceMap.en;
+
     try {
-      // 1. Try python edge-tts CLI tool if available in system environment
-      const voice = config.edgeTtsVoice || 'en-US-AriaNeural';
+      // Clean text string for shell safety
       const cleanText = text.replace(/"/g, '\\"').replace(/\n/g, ' ');
       
       const cmd = `edge-tts --voice "${voice}" --text "${cleanText}" --write-media "${audioPath}"`;
       await execAsync(cmd);
 
-      console.log(`✅ Voiceover generated via Edge-TTS: ${audioPath}`);
+      console.log(`✅ Voiceover generated via Edge-TTS [Voice: ${voice}]: ${audioPath}`);
 
       // Subtitle generation
       const srtPath = await this.generateSubtitlesSRT(text, audioPath);
 
       return { audioPath, audioUrl, subtitlesPath: srtPath };
     } catch (err: any) {
-      console.warn('⚠️ Edge-TTS CLI not found or failed, creating fallback audio:', err.message);
+      console.warn(`⚠️ Edge-TTS CLI error for voice ${voice}, creating fallback audio:`, err.message);
       await this.generateSilentAudio(audioPath, 25);
       return { audioPath, audioUrl };
     }

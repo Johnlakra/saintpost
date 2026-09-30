@@ -57,22 +57,32 @@ export function registerBotCommands(bot: Telegraf<Context>) {
     );
   });
 
-  // 3. /today
+  // 3. /today [optional: hi|pa|en]
   bot.command('today', adminAuthMiddleware, async (ctx) => {
-    ctx.reply('🔍 Fetching today\'s feast day and generating preview...');
+    const text = ctx.message.text.trim();
+    const parts = text.split(' ').slice(1);
+    let lang: 'hi' | 'en' | 'pa' = 'hi';
+
+    if (parts[0] && ['hi', 'en', 'pa'].includes(parts[0].toLowerCase())) {
+      lang = parts[0].toLowerCase() as 'hi' | 'en' | 'pa';
+    }
+
+    const langNames: Record<string, string> = { hi: 'हिंदी (Simple Hindi)', pa: 'ਪੰਜਾਬੀ (Punjabi)', en: 'English' };
+
+    ctx.reply(`🔍 Fetching today's feast day in ${langNames[lang]}...`);
     try {
       const saint = await fetcher.getSaintForDate(new Date());
       ctx.reply(
         `✝️ TODAY'S FEAST: ${saint.name}\n` +
-        `📅 Date: Month ${saint.feast_month}/${saint.feast_day}\n` +
-        `📖 Rank: ${saint.rank || 'Feast'}\n\n` +
+        `🌐 Language: ${langNames[lang]}\n` +
+        `📅 Date: Month ${saint.feast_month}/${saint.feast_day}\n\n` +
         `Generating 9:16 video preview package... Please wait ~2-3 minutes.`
       );
 
-      const result = await pipeline.runPipelineForSaint(saint);
+      const result = await pipeline.runPipelineForSaint(saint, lang);
       
       ctx.reply(
-        `✅ PREVIEW READY FOR ${result.saint.name}\n\n` +
+        `✅ PREVIEW READY FOR ${result.saint.name} [${lang.toUpperCase()}]\n\n` +
         `🎬 Rendered Video: ${result.finalVideoUrl}\n` +
         `🖼️ Cover Image: ${result.coverImageUrl}\n\n` +
         `📝 Caption:\n${result.content.caption}\n\n` +
@@ -83,20 +93,32 @@ export function registerBotCommands(bot: Telegraf<Context>) {
     }
   });
 
-  // 4. /saint <name>
+  // 4. /saint <name> [optional: hi|pa|en]
   bot.command('saint', adminAuthMiddleware, async (ctx) => {
-    const args = ctx.message.text.split(' ').slice(1).join(' ');
-    if (!args) {
-      ctx.reply('⚠️ Usage: /saint <Saint Name>\nExample: /saint St. Francis of Assisi');
+    const text = ctx.message.text.trim();
+    const parts = text.split(' ').slice(1);
+    if (parts.length === 0) {
+      ctx.reply('⚠️ Usage: /saint <Saint Name> [optional language: hi|pa|en]\nExamples:\n• /saint St. Francis (Defaults to Simple Hindi)\n• /saint St. Francis pa (Punjabi)\n• /saint St. Francis en (English)');
       return;
     }
 
-    ctx.reply(`🚀 Initializing on-demand video creation pipeline for "${args}"...`);
+    let lang: 'hi' | 'en' | 'pa' = 'hi';
+    const lastPart = parts[parts.length - 1].toLowerCase();
+    
+    let saintName = parts.join(' ');
+    if (['hi', 'en', 'pa'].includes(lastPart)) {
+      lang = lastPart as 'hi' | 'en' | 'pa';
+      saintName = parts.slice(0, parts.length - 1).join(' ');
+    }
+
+    const langNames: Record<string, string> = { hi: 'हिंदी (Simple Hindi)', pa: 'ਪੰਜਾਬੀ (Punjabi)', en: 'English' };
+
+    ctx.reply(`🚀 Initializing video pipeline for "${saintName}" in ${langNames[lang]}...`);
     try {
-      const result = await pipeline.runPipelineForSaint(args);
+      const result = await pipeline.runPipelineForSaint(saintName, lang);
 
       ctx.reply(
-        `🎉 ON-DEMAND CONTENT GENERATED FOR ${result.saint.name}!\n\n` +
+        `🎉 CONTENT GENERATED FOR ${result.saint.name} [${lang.toUpperCase()}]!\n\n` +
         `🎬 Final MP4 Video: ${result.finalVideoUrl}\n` +
         `🎨 Character Sheet: ${result.characterSheetUrl}\n` +
         `🖼️ Feed Cover: ${result.coverImageUrl}\n\n` +
