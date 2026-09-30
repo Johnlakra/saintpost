@@ -47,6 +47,8 @@ export const config = {
   enableVoiceover: process.env.ENABLE_VOICEOVER !== 'false',
   enableMusic: process.env.ENABLE_MUSIC !== 'false',
   enableSubtitles: process.env.ENABLE_SUBTITLES !== 'false',
+  // Devotional extras are OFF by default so images stay true to the documented saint.
+  saintHalo: process.env.SAINT_HALO === 'true',
   freeMode: process.env.FREE_MODE !== 'false',
   dryRun: process.env.DRY_RUN === 'true',
 };

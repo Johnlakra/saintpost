@@ -1,3 +1,4 @@
+import axios from 'axios';
 import { Telegraf, Context } from 'telegraf';
 import { config } from '../config/env.js';
 import { SaintPostPipeline } from '../engine/pipeline.js';
@@ -68,6 +69,7 @@ export function registerBotCommands(bot: Telegraf<Context>) {
       `/accounts - List connected Instagram & YouTube accounts\n` +
       `/addaccount <platform> <name> - Add new social media channel\n` +
       `/logo <account_name> <image_url> - Update logo overlay for account\n` +
+      `/refimage <saint> | <photo url> - Set documented photo used as the face reference\n` +
       `/status - Show system pipeline status & database logs\n` +
       `/settings - View or toggle video/voiceover settings`
     );
@@ -137,6 +139,7 @@ export function registerBotCommands(bot: Telegraf<Context>) {
         `🎉 CONTENT GENERATED FOR ${result.saint.name} [${lang.toUpperCase()}]!\n\n` +
         `🎬 Final MP4 Video: ${result.finalVideoUrl}\n` +
         `🎨 Character Sheet: ${result.characterSheetUrl}\n` +
+        `🧑 Face reference: ${result.referenceImageUrl || 'none found (use /refimage to set a documented photo)'}\n` +
         `🖼️ Feed Cover: ${result.coverImageUrl}\n\n` +
         `📲 Published to ${result.publishResult.successCount} active accounts.`
       );
@@ -205,6 +208,29 @@ export function registerBotCommands(bot: Telegraf<Context>) {
       ctx.reply(`🎨 Logo updated for account "${accountName}". It will appear bottom-right at 10% opacity in future video renders.`);
     } catch (err: any) {
       ctx.reply(`🎨 Logo overlay saved for "${accountName}": ${logoUrl}`);
+    }
+  });
+
+  // /refimage <saint name> | <image url> : set the documented photo used as the face reference
+  bot.command('refimage', adminAuthMiddleware, async (ctx) => {
+    const args = ctx.message.text.replace(/^\/refimage(@\w+)?\s*/i, '');
+    const [rawName, rawUrl] = args.split('|').map(x => x?.trim());
+    if (!rawName || !rawUrl || !/^https?:\/\//i.test(rawUrl)) {
+      ctx.reply('⚠️ Usage: /refimage <Saint Name> | <https://direct-link-to-photo.jpg>\nUse a documented photo or portrait of the real saint (jpg/png/webp).');
+      return;
+    }
+    try {
+      const head = await axios.get(rawUrl, { responseType: 'arraybuffer', timeout: 20000, headers: { 'User-Agent': 'SaintPostBot/1.0' } });
+      if (!/^image\/(jpeg|png|webp)/i.test(String(head.headers['content-type'] || ''))) throw new Error('URL is not a jpg/png/webp image');
+      await db.query(`ALTER TABLE saints ADD COLUMN IF NOT EXISTS reference_image_url TEXT`);
+      const upd = await db.query(`UPDATE saints SET reference_image_url = $2 WHERE name ILIKE $1 RETURNING name`, [`%${rawName}%`, rawUrl]);
+      if (upd.rows.length === 0) {
+        // feast 0/0 never matches a calendar date, so this row is only found by name
+        await db.query(`INSERT INTO saints (name, feast_month, feast_day, reference_image_url) VALUES ($1, 0, 0, $2)`, [rawName, rawUrl]);
+      }
+      ctx.reply(`✅ Face reference saved for "${rawName}". Every image for this saint will now keep this person's face.`);
+    } catch (err: any) {
+      ctx.reply(`❌ Could not save reference image: ${err.message}`);
     }
   });
 

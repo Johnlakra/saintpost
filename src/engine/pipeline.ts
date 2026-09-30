@@ -4,6 +4,7 @@ import { VisualAssetService } from '../services/visualAssetService.js';
 import { VideoService } from '../services/videoService.js';
 import { TTSService } from '../services/ttsService.js';
 import { VideoAssemblyService, AssemblyScene } from '../services/videoAssemblyService.js';
+import { FactService } from '../services/factService.js';
 import { PublishingService } from '../services/publishingService.js';
 import { config } from '../config/env.js';
 import { db } from '../db/index.js';
@@ -12,6 +13,7 @@ export interface PipelineResult {
   saint: SaintRecord;
   content: GeneratedContent;
   characterSheetUrl: string;
+  referenceImageUrl?: string;
   coverImageUrl: string;
   finalVideoUrl: string;
   publishResult: { successCount: number; errors: string[] };
@@ -27,6 +29,7 @@ export class SaintPostPipeline {
   private ttsService: TTSService;
   private assemblyService: VideoAssemblyService;
   private publishingService: PublishingService;
+  private factService = new FactService();
 
   constructor() {
     this.saintFetcher = new SaintFetcherService();
@@ -74,11 +77,15 @@ export class SaintPostPipeline {
     }
     console.log(`✅ Step 1: Loaded Saint Data -> ${saint.name}`);
 
+    // STEP 1a: documented facts + documented photo (cached on the saint row)
+    await this.factService.ensureFacts(saint);
+
     // STEP 1b: casting sheet (age/gender/clothing) so every scene shows the right person
     await db.query(`ALTER TABLE saints ADD COLUMN IF NOT EXISTS appearance TEXT`).catch(() => {});
     saint.appearance = await this.llmService.getAppearance(saint);
     if (saint.appearance) {
       console.log(`🧑 Appearance: ${saint.appearance}`);
+      console.log(`🖼️ Face reference: ${saint.reference_image_url || 'none (text-only, appearance from documented facts)'}`);
       if (saint.id) db.query(`UPDATE saints SET appearance = $2 WHERE id = $1`, [saint.id, saint.appearance]).catch(() => {});
     }
 
@@ -172,6 +179,7 @@ export class SaintPostPipeline {
       saint,
       content,
       characterSheetUrl,
+      referenceImageUrl: saint.reference_image_url,
       coverImageUrl,
       finalVideoUrl,
       publishResult,
