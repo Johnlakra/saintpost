@@ -17,6 +17,8 @@ export interface PipelineResult {
   publishResult: { successCount: number; errors: string[] };
 }
 
+let pipelineBusy = false;
+
 export class SaintPostPipeline {
   private saintFetcher: SaintFetcherService;
   private llmService: LLMService;
@@ -42,6 +44,20 @@ export class SaintPostPipeline {
   async runPipelineForSaint(
     saintInput?: SaintRecord | string,
     targetLang: 'en' | 'hi' | 'pa' = config.defaultLanguage || 'hi'
+  ): Promise<PipelineResult> {
+    // One render at a time: parallel runs exhaust RAM on the free tier and trip image-API rate limits.
+    if (pipelineBusy) throw new Error('Another video is still being generated. Please wait for it to finish.');
+    pipelineBusy = true;
+    try {
+      return await this.runPipeline(saintInput, targetLang);
+    } finally {
+      pipelineBusy = false;
+    }
+  }
+
+  private async runPipeline(
+    saintInput: SaintRecord | string | undefined,
+    targetLang: 'en' | 'hi' | 'pa'
   ): Promise<PipelineResult> {
     console.log(`\n======================================================`);
     console.log(`🚀 STARTING SAINTPOST AUTOMATION PIPELINE [LANG: ${targetLang.toUpperCase()}]`);
