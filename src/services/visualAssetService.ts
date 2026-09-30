@@ -111,30 +111,56 @@ export class VisualAssetService {
 
   /** Tries each configured provider in order, validating that real image bytes came back. */
   private async queryImageAPI(prompt: string, shape: Shape, seed: number): Promise<Buffer> {
-    const providers: Array<[string, () => Promise<Buffer>]> = [];
-    if (config.falApiKey) providers.push(['fal.ai FLUX schnell', () => this.fal(prompt, shape, seed)]);
-    if (config.huggingfaceApiKey) providers.push(['HuggingFace FLUX schnell', () => this.huggingFace(prompt, shape, seed)]);
-    if (config.replicateApiToken) providers.push(['Replicate FLUX schnell', () => this.replicate(prompt, shape, seed)]);
-    providers.push(['Pollinations flux', () => this.pollinations(prompt, shape, seed, 'flux')]);
-    providers.push(['Pollinations turbo', () => this.pollinations(prompt, shape, seed, 'turbo')]);
+    const providers: Array<[string, () => Promise<Buffer>, number]> = [];
+    if (config.falApiKey) providers.push(['fal.ai FLUX schnell', () => this.fal(prompt, shape, seed), 1]);
+    if (config.huggingfaceApiKey) {
+      providers.push(['HuggingFace/nscale FLUX schnell', () => this.hfRouter('nscale', prompt, shape, seed), 1]);
+      providers.push(['HuggingFace/together FLUX schnell', () => this.hfRouter('together', prompt, shape, seed), 1]);
+    }
+    if (config.replicateApiToken) providers.push(['Replicate FLUX schnell', () => this.replicate(prompt, shape, seed), 1]);
+    // Pollinations' anonymous tier rate-limits hard (HTTP 402/429): serialize calls and back off patiently.
+    providers.push(['Pollinations flux', () => this.pollinationsQueued(prompt, shape, seed, 'flux'), 4]);
+    providers.push(['Pollinations turbo', () => this.pollinationsQueued(prompt, shape, seed, 'turbo'), 2]);
 
     const errors: string[] = [];
-    for (const [name, fn] of providers) {
-      for (let attempt = 1; attempt <= 2; attempt++) {
+    for (const [name, fn, tries] of providers) {
+      for (let attempt = 1; attempt <= tries; attempt++) {
         try {
           const buf = await fn();
           if (!isImage(buf)) throw new Error('response was not a valid image');
           console.log(`     ✓ ${name} (${Math.round(buf.length / 1024)} KB)`);
           return buf;
         } catch (e: any) {
-          const msg = e.response?.status ? `HTTP ${e.response.status}` : e.message;
-          console.warn(`     ✗ ${name} attempt ${attempt}: ${msg}`);
-          if (attempt === 2) errors.push(`${name}: ${msg}`);
-          else await new Promise(r => setTimeout(r, 2500));
+          const msg = this.describeError(e);
+          console.warn(`     ✗ ${name} attempt ${attempt}/${tries}: ${msg}`);
+          if (attempt === tries) errors.push(`${name}: ${msg}`);
+          else await new Promise(r => setTimeout(r, 6000 * attempt));
         }
       }
     }
     throw new Error(`All image providers failed -> ${errors.join(' | ')}`);
+  }
+
+  private describeError(e: any): string {
+    if (!e.response) return e.message;
+    let body = '';
+    try {
+      const d = e.response.data;
+      body = Buffer.isBuffer(d) || d instanceof ArrayBuffer ? Buffer.from(d as any).toString('utf8') : typeof d === 'string' ? d : JSON.stringify(d);
+    } catch { /* ignore */ }
+    return `HTTP ${e.response.status}${body ? ` ${body.replace(/\s+/g, ' ').slice(0, 160)}` : ''}`;
+  }
+
+  private pollChain: Promise<unknown> = Promise.resolve();
+
+  /** One Pollinations request at a time (across overlapping jobs), 3s apart. */
+  private pollinationsQueued(prompt: string, shape: Shape, seed: number, model: string): Promise<Buffer> {
+    const run = this.pollChain.then(async () => {
+      try { return await this.pollinations(prompt, shape, seed, model); }
+      finally { await new Promise(r => setTimeout(r, 3000)); }
+    });
+    this.pollChain = run.catch(() => undefined);
+    return run;
   }
 
   private async fetchBytes(url: string): Promise<Buffer> {
@@ -153,13 +179,17 @@ export class VisualAssetService {
     return this.fetchBytes(url);
   }
 
-  private async huggingFace(prompt: string, shape: Shape, seed: number): Promise<Buffer> {
+  /** HuggingFace Inference Providers (OpenAI-style images API). The old hf-inference FLUX endpoint returns 410 Gone. */
+  private async hfRouter(provider: 'nscale' | 'together', prompt: string, shape: Shape, seed: number): Promise<Buffer> {
     const res = await axios.post(
-      'https://router.huggingface.co/hf-inference/models/black-forest-labs/FLUX.1-schnell',
-      { inputs: prompt, parameters: { width: shape.genW, height: shape.genH, seed, num_inference_steps: 4 } },
-      { headers: { Authorization: `Bearer ${config.huggingfaceApiKey}`, Accept: 'image/png' }, responseType: 'arraybuffer', timeout: 120000 }
+      `https://router.huggingface.co/${provider}/v1/images/generations`,
+      { model: 'black-forest-labs/FLUX.1-schnell', prompt, response_format: 'b64_json', width: shape.genW, height: shape.genH, size: `${shape.genW}x${shape.genH}`, seed, steps: 4, n: 1 },
+      { headers: { Authorization: `Bearer ${config.huggingfaceApiKey}` }, timeout: 120000 }
     );
-    return Buffer.from(res.data);
+    const item = res.data?.data?.[0];
+    if (item?.b64_json) return Buffer.from(item.b64_json, 'base64');
+    if (item?.url) return this.fetchBytes(item.url);
+    throw new Error('no image in response');
   }
 
   private async replicate(prompt: string, shape: Shape, seed: number): Promise<Buffer> {
@@ -183,7 +213,7 @@ export class VisualAssetService {
   private async pollinations(prompt: string, shape: Shape, seed: number, model: string): Promise<Buffer> {
     const p = encodeURIComponent(prompt.replace(/\s+/g, ' ').trim().slice(0, 900));
     const url = `https://image.pollinations.ai/prompt/${p}?width=${shape.genW}&height=${shape.genH}&seed=${seed}&model=${model}&nologo=true&enhance=false&safe=true`;
-    const res = await axios.get(url, { responseType: 'arraybuffer', timeout: 120000, headers: { 'User-Agent': 'SaintPost/1.0' } });
+    const res = await axios.get(url, { responseType: 'arraybuffer', timeout: 120000, headers: { 'User-Agent': 'SaintPost/1.0', ...(config.pollinationsApiKey ? { Authorization: `Bearer ${config.pollinationsApiKey}` } : {}) } });
     return Buffer.from(res.data);
   }
 }

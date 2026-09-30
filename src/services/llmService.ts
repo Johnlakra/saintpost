@@ -25,7 +25,36 @@ export class LLMService {
 
   constructor() {
     this.openrouterApiKey = config.openrouterApiKey;
-    this.primaryModel = config.openrouterModel || 'anthropic/claude-3.5-haiku';
+    this.primaryModel = config.openrouterModel;
+  }
+
+
+  /**
+   * OpenRouter retires/renames models often hard-coded slugs rot. Ask OpenRouter what exists right now:
+   * the configured model first (if still live), then any extra models from OPENROUTER_FALLBACK_MODELS,
+   * then currently-free capable models.
+   */
+  private async resolveModels(modelOverride?: string): Promise<string[]> {
+    let live: Array<{ id: string; context_length?: number; pricing?: { prompt?: string; completion?: string } }> = [];
+    try {
+      const res = await axios.get('https://openrouter.ai/api/v1/models', { timeout: 20000 });
+      live = res.data?.data || [];
+    } catch (e: any) {
+      console.warn('⚠️ Could not list OpenRouter models:', e.message);
+    }
+    const liveIds = new Set(live.map(m => m.id));
+    const wanted = [modelOverride || this.primaryModel, ...(process.env.OPENROUTER_FALLBACK_MODELS || '').split(',').map(x => x.trim())].filter(Boolean);
+    // If the list call failed, trust configured names as-is.
+    const configured = liveIds.size ? wanted.filter(m => liveIds.has(m)) : wanted;
+    wanted.filter(m => liveIds.size && !liveIds.has(m)).forEach(m => console.warn(`⚠️ Model "${m}" no longer exists on OpenRouter - skipping. Update OPENROUTER_MODEL.`));
+
+    const pref = /llama-3\.3-70b|qwen|gpt-oss|gemma-3-27b|deepseek|mistral|gemini|glm|kimi/i;
+    const free = live
+      .filter(m => m.id.endsWith(':free') && (m.context_length || 0) >= 16000 && !/vision|image|embed|guard|safe/i.test(m.id))
+      .sort((a, b) => Number(pref.test(b.id)) - Number(pref.test(a.id)) || (b.context_length || 0) - (a.context_length || 0))
+      .map(m => m.id);
+
+    return [...new Set([...configured, ...free])].slice(0, 8);
   }
 
   /**
@@ -37,12 +66,8 @@ export class LLMService {
       return '';
     }
 
-    const modelsToTry = [
-      modelOverride || this.primaryModel,
-      'google/gemini-2.0-flash-exp:free',
-      'deepseek/deepseek-chat:free',
-      'meta-llama/llama-3.3-70b-instruct:free',
-    ];
+    const modelsToTry = await this.resolveModels(modelOverride);
+    if (modelsToTry.length === 0) throw new Error('No usable OpenRouter models found (check OPENROUTER_MODEL / key credits).');
 
     for (const model of modelsToTry) {
       try {
@@ -61,15 +86,15 @@ export class LLMService {
               'X-Title': 'SaintPost Automation Bot',
               'Content-Type': 'application/json',
             },
-            timeout: 30000,
+            timeout: 90000,
           }
         );
 
-        if (response.data?.choices?.[0]?.message?.content) {
-          return response.data.choices[0].message.content.trim();
-        }
+        const text = response.data?.choices?.[0]?.message?.content;
+        if (text) return String(text).trim();
       } catch (err: any) {
-        console.warn(`⚠️ OpenRouter error on model ${model}:`, err.response?.data || err.message);
+        const detail = err.response?.data?.error?.message || err.message;
+        console.warn(`⚠️ OpenRouter error on model ${model}: ${detail}`);
       }
     }
 
@@ -199,8 +224,8 @@ Format output as JSON:
       };
 
     } catch (err: any) {
-      console.warn(`⚠️ LLM Generation failed for ${langLabel}, using fallback template:`, err.message);
-      return this.getDryRunFallbackContent(saint, targetLang);
+      // Don't auto-post a generic template as if it were real content.
+      throw new Error(`LLM content generation failed: ${err.message}`);
     }
   }
 

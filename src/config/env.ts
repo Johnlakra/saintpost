@@ -19,7 +19,8 @@ export const config = {
 
   // AI Content Models (OpenRouter / Free Tier)
   openrouterApiKey: process.env.OPENROUTER_API_KEY || '',
-  openrouterModel: process.env.OPENROUTER_MODEL || 'anthropic/claude-3.5-haiku',
+  openrouterModel: process.env.OPENROUTER_MODEL || '',
+  pollinationsApiKey: process.env.POLLINATIONS_API_KEY || '',
   huggingfaceApiKey: process.env.HUGGINGFACE_API_KEY || '',
 
   // Visual Asset Generation
