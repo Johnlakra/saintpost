@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.env
+*.log
+.DS_Store
+
+# Media build artifacts
+public/renders/*.mp4
+public/renders/*.txt
+public/audio/*.mp3
+public/audio/*.srt
+public/assets/*.png
+public/assets/*.svg
+public/video_clips/*.mp4

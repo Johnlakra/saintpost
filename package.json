@@ -1,0 +1,46 @@
+{
+  "name": "saintpost",
+  "version": "1.0.0",
+  "description": "Automated Catholic Feast Day Content Bot for Instagram Reels & YouTube Shorts",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "nodemon --exec ts-node src/index.ts",
+    "db:migrate": "ts-node src/db/migrate.ts",
+    "db:seed": "ts-node src/db/seed.ts",
+    "test:pipeline": "ts-node -e \"import { SaintPostPipeline } from './src/engine/pipeline.js'; new SaintPostPipeline().runPipelineForSaint('St. Francis of Assisi');\""
+  },
+  "keywords": [
+    "telegram-bot",
+    "catholic-saints",
+    "instagram-reels",
+    "youtube-shorts",
+    "ai-video",
+    "render",
+    "neon-db",
+    "supercmo-skills"
+  ],
+  "author": "SaintPost Team",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.7.9",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "fluent-ffmpeg": "^2.1.3",
+    "node-cron": "^3.0.3",
+    "pg": "^8.13.1",
+    "sanctus": "^1.0.15",
+    "telegraf": "^4.16.3"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/fluent-ffmpeg": "^2.1.27",
+    "@types/node": "^22.10.2",
+    "@types/pg": "^8.11.10",
+    "nodemon": "^3.1.9",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.7.2"
+  }
+}

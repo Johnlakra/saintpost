@@ -1,0 +1,173 @@
+[
+  {
+    "month": 1,
+    "day": 1,
+    "name": "Mary, Mother of God",
+    "rank": "Solemnity",
+    "color": "White",
+    "patronage": "Mothers, All Humanity, Roman Catholic Church",
+    "shortDescription": "The Solemnity of Mary, Holy Mother of God celebrates Mary's divine motherhood and her central role in salvation history.",
+    "fullStory": "Mary, the Mother of Jesus, answered God's call with total trust during the Annunciation. Through her fiat, God entered human history. As the Mother of God, she shows us how to listen humbly to God's word and embrace His holy will.",
+    "whatWeLearn": [
+      "Say yes to God even when the future is uncertain.",
+      "Ponder God's promises in your heart daily.",
+      "Seek Mary's maternal intercession in times of trial."
+    ],
+    "didYouKnow": "The Council of Ephesus in 431 AD officially proclaimed Mary as 'Theotokos', meaning 'God-Bearer'.",
+    "era": "Apostolic Era",
+    "region": "Nazareth / Jerusalem",
+    "symbols": ["crown of stars", "blue mantle", "rosary"]
+  },
+  {
+    "month": 1,
+    "day": 28,
+    "name": "St. Thomas Aquinas",
+    "rank": "Memorial",
+    "color": "White",
+    "patronage": "Students, Universities, Theologians, Academics",
+    "shortDescription": "Dominican priest, Doctor of the Church, and philosopher who harmonized faith and reason.",
+    "fullStory": "St. Thomas Aquinas was one of the greatest theologians in Church history. Known as the Angelic Doctor, he wrote the masterwork Summa Theologiae, demonstrating that faith and human reason complement each other in discovering truth.",
+    "whatWeLearn": [
+      "Pursue truth with humility and intellectual rigor.",
+      "Integrate deep prayer with study and work.",
+      "Recognize God as the ultimate source of wisdom."
+    ],
+    "didYouKnow": "Near the end of his life, after a profound mystical experience during Mass, Thomas stopped writing, saying everything he wrote felt like straw compared to what was revealed to him.",
+    "era": "Medieval",
+    "region": "Italy",
+    "symbols": ["sun on chest", "book", "quill", "monstrance"]
+  },
+  {
+    "month": 2,
+    "day": 14,
+    "name": "St. Valentine",
+    "rank": "Memorial",
+    "color": "Red",
+    "patronage": "Love, Marriages, Young People, Beekeepers",
+    "shortDescription": "Roman priest and martyr who secretly performed Christian marriages under persecution.",
+    "fullStory": "St. Valentine served during the reign of Emperor Claudius II in third-century Rome. Defying imperial bans on marriages for young soldiers, Valentine secretly married couples so husbands would not be drafted into battle. He was imprisoned and martyred for his steadfast love of Christ.",
+    "whatWeLearn": [
+      "Stand up for the sacred dignity of holy matrimony.",
+      "Demonstrate love through heroic self-sacrifice.",
+      "Remain faithful to Christ under persecution."
+    ],
+    "didYouKnow": "Before his martyrdom, Valentine restored the sight of his jailer's blind daughter and left her a letter signed 'From your Valentine'.",
+    "era": "Early Church",
+    "region": "Rome, Italy",
+    "symbols": ["roses", "birds", "palm branch", "sword"]
+  },
+  {
+    "month": 3,
+    "day": 17,
+    "name": "St. Patrick",
+    "rank": "Feast",
+    "color": "White",
+    "patronage": "Ireland, Missionaries, Engineers, Exiles",
+    "shortDescription": "Apostle of Ireland who converted the pagan island to Christianity using the shamrock to explain the Holy Trinity.",
+    "fullStory": "Kidnapped as a teenager by Irish raiders, Patrick worked as a slave shepherd before escaping home. Prompted by a divine vision, he returned to Ireland as a bishop to spread the Gospel, forgiving his captors and converting thousands of Druids and chiefs.",
+    "whatWeLearn": [
+      "Forgive those who have wronged or mistreated you.",
+      "Answer God's missionary call with courage.",
+      "Use simple metaphors to share complex truths of faith."
+    ],
+    "didYouKnow": "St. Patrick was not born in Ireland—he was born in Roman Britain and came to love Ireland through prayer during his captivity.",
+    "era": "Early Medieval",
+    "region": "Ireland",
+    "symbols": ["shamrock", "crozier", "snakes", "baptismal font"]
+  },
+  {
+    "month": 3,
+    "day": 19,
+    "name": "St. Joseph",
+    "rank": "Solemnity",
+    "color": "White",
+    "patronage": "Universal Church, Fathers, Workers, Happy Death",
+    "shortDescription": "Foster father of Jesus Christ and chaste spouse of the Blessed Virgin Mary.",
+    "fullStory": "St. Joseph was a righteous carpenter of Nazareth who protected and raised Jesus with silent devotion. Through angelic dreams, he implicitly obeyed God, providing for the Holy Family through hard labor and quiet strength.",
+    "whatWeLearn": [
+      "Practice quiet obedience to God's guidance.",
+      "Sanctify everyday work as service to God.",
+      "Protect and cherish your family with sacrificial love."
+    ],
+    "didYouKnow": "In Sacred Scripture, St. Joseph never speaks a single word—his faith is recorded purely through action.",
+    "era": "Apostolic Era",
+    "region": "Nazareth",
+    "symbols": ["carpenter square", "lily", "infant Jesus", "tools"]
+  },
+  {
+    "month": 10,
+    "day": 4,
+    "name": "St. Francis of Assisi",
+    "rank": "Feast",
+    "color": "White",
+    "patronage": "Animals, Ecology, Merchants, Peace, Italy",
+    "shortDescription": "Founder of the Franciscans, who abandoned wealth to rebuild Christ's Church in poverty and peace.",
+    "fullStory": "Francis grew up as a wealthy cloth merchant's son before hearing Christ speak from the San Damiano cross: 'Rebuild my Church.' Embracing Lady Poverty, Francis lived radically according to the Gospel, preaching to people and animals alike and bearing the stigmata.",
+    "whatWeLearn": [
+      "Live simply and free yourself from material attachment.",
+      "See God's presence and goodness in creation.",
+      "Be an instrument of peace in divided places."
+    ],
+    "didYouKnow": "St. Francis created the very first live Nativity scene in Greccio, Italy in 1223 to help people experience the reality of the Incarnation.",
+    "era": "Medieval",
+    "region": "Assisi, Italy",
+    "symbols": ["stigmata", "wolf", "birds", "tau cross", "brown habit"]
+  },
+  {
+    "month": 10,
+    "day": 15,
+    "name": "St. Teresa of Avila",
+    "rank": "Memorial",
+    "color": "White",
+    "patronage": "Mystics, Carmelite Order, Headache sufferers",
+    "shortDescription": "Spanish Carmelite reformer, Doctor of the Church, and master of contemplative prayer.",
+    "fullStory": "St. Teresa reformed the Carmelite order, founding the Discalced Carmelites along with St. John of the Cross. Her spiritual classics, including The Interior Castle, map the soul's journey into deep union with God.",
+    "whatWeLearn": [
+      "Cultivate interior silence and mental prayer daily.",
+      "Persevere through spiritual dryness and trials.",
+      "Let divine love transform your inner soul."
+    ],
+    "didYouKnow": "St. Teresa had a famous sense of humor; when her carriage broke in a muddy river, she told God: 'If this is how you treat your friends, no wonder you have so few!'",
+    "era": "Renaissance / Reformation",
+    "region": "Spain",
+    "symbols": ["pierced heart", "quill", "book", "flaming arrow"]
+  },
+  {
+    "month": 11,
+    "day": 1,
+    "name": "All Saints",
+    "rank": "Solemnity",
+    "color": "White",
+    "patronage": "Universal Church",
+    "shortDescription": "Honoring all holy men and women in heaven, both known and unknown.",
+    "fullStory": "The Solemnity of All Saints commemorates the triumph of the Church Triumphant. It reminds believers that holiness is not reserved for a select few, but is the universal call of every baptized Christian.",
+    "whatWeLearn": [
+      "Strive for holiness in your daily life.",
+      "Rely on the communion of saints in heaven for prayers.",
+      "Keep your eyes focused on eternal life in heaven."
+    ],
+    "didYouKnow": "All Saints Day was moved to November 1 by Pope Gregory III when he dedicated a chapel in St. Peter's Basilica to all martyrs and saints.",
+    "era": "Universal",
+    "region": "Global",
+    "symbols": ["crowns", "palms", "white robes", "heavenly host"]
+  },
+  {
+    "month": 12,
+    "day": 12,
+    "name": "Our Lady of Guadalupe",
+    "rank": "Feast",
+    "color": "White",
+    "patronage": "The Americas, Unborn Children, Mexico",
+    "shortDescription": "Apparition of the Blessed Virgin Mary to St. Juan Diego on Tepeyac Hill.",
+    "fullStory": "In 1531, Mary appeared as an indigenous pregnant woman to St. Juan Diego in Mexico. She left a miraculous image of herself on Juan Diego's tilma (cloak), leading to the conversion of over 9 million indigenous people in 7 years.",
+    "whatWeLearn": [
+      "Trust in Mary's motherly protection: 'Am I not here, who am your Mother?'",
+      "Honor every human culture as beloved by God.",
+      "Defend the unborn and vulnerable."
+    ],
+    "didYouKnow": "The original tilma made of cactus fiber should have decayed in 20 years, yet it remains perfectly intact without paint pigments almost 500 years later.",
+    "era": "Colonial Americas",
+    "region": "Mexico",
+    "symbols": ["tilma", "castilian roses", "starry mantle", "crescent moon"]
+  }
+]
