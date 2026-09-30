@@ -134,15 +134,15 @@ export class SaintPostPipeline {
     if (brief) content.video_script.forEach((sc, i) => { sc.image_prompt = brief.scenes[i]; });
     console.log(`✅ Step 2b: Visual brief ${brief ? 'built for ' + brief.scenes.length + ' scenes' : 'skipped (using basic visuals)'}`);
 
-    // STEP 3: GENERATE CHARACTER SHEET
-    const charSheetResult = await this.visualService.generateCharacterSheet(saint);
-    const characterSheetUrl = charSheetResult.url;
-    console.log(`✅ Step 3: Saint Character Sheet Generated -> ${characterSheetUrl}`);
+    // STEP 3/4: cover first (it becomes the face anchor for every scene when no documented photo exists)
     progress('🎨 Painting cover and scene images (this is the slow part)...');
-
-    // STEP 4: GENERATE SCENE IMAGES & COVER IMAGE
-    const coverResult = await this.visualService.generateCoverImage(saint, characterSheetUrl, brief?.cover);
+    const coverResult = await this.visualService.generateCoverImage(saint, undefined, brief?.cover);
     const coverImageUrl = coverResult.url;
+    let characterSheetUrl = '';
+    if (config.generateCharacterSheet) {
+      characterSheetUrl = (await this.visualService.generateCharacterSheet(saint)).url;
+    }
+    console.log(`✅ Step 3: Cover generated${characterSheetUrl ? ' + character sheet' : ' (character sheet skipped to save image calls)'}`);
     const sceneAssets = await this.visualService.generateSceneImages(
       saint,
       content.video_script,
