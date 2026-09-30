@@ -23,8 +23,8 @@ const SHAPES: Record<'square' | 'story' | 'sheet', Shape> = {
 };
 
 const STYLE =
-  'classical Catholic devotional oil painting, reverent, warm golden candlelight, soft glowing halo, rich detail, painterly, dignified, ' +
-  'beautiful composition, no text, no letters, no watermark, no logo, no modern objects, anatomically correct hands and face';
+  'classical devotional oil painting, reverent, warm natural light, rich detail, painterly, dignified, ' +
+  'beautiful composition, no text, no letters, no watermark, no logo, anatomically correct hands and face';
 
 const STYLE_MODERN =
   'warm realistic digital illustration, soft golden light, gentle uplifting mood, natural youthful features, rich detail, ' +
@@ -60,12 +60,10 @@ export class VisualAssetService {
    * This (plus a fixed seed) is what keeps the face/outfit stable with text-to-image models.
    */
   private characterDescriptor(saint: SaintRecord): string {
-    const symbols = Array.isArray(saint.symbols) && saint.symbols.length ? `, with symbols: ${saint.symbols.slice(0, 3).join(', ')}` : '';
-    if (saint.appearance) {
-      return `${saint.appearance}; a subtle thin golden halo above the head${symbols}`;
-    }
+    const halo = config.saintHalo ? ', a subtle thin golden halo' : ', no halo';
+    if (saint.appearance) return `${saint.appearance}${halo}`;
     const where = [saint.region, saint.era].filter(Boolean).join(', ');
-    return `${saint.name}${where ? ` (${where})` : ''}, period-accurate clothing for their real time and place, a subtle thin golden halo${symbols}`;
+    return `${saint.name}${where ? ` (${where})` : ''}, ordinary clothing accurate for their real time and place, no invented props${halo}`;
   }
 
   /** Modern saints get a realistic illustration style, ancient ones a classical painting. */
@@ -111,7 +109,11 @@ export class VisualAssetService {
   private async makeImage(kind: string, saint: SaintRecord, prompt: string, shape: Shape, seed: number): Promise<ImageAssetResult> {
     const fileName = `${kind}_${slug(saint.name)}_${Date.now()}.png`;
     const localPath = path.join(this.outputDir, fileName);
-    const raw = await this.queryImageAPI(prompt, shape, seed);
+    const ref = saint.reference_image_url;
+    const finalPrompt = ref
+      ? `Keep the EXACT same real person as in the reference photo: identical face, age, skin tone, hair and clothing. Do not add robes, halos, crosses or props that are not in the photo. ${prompt}`
+      : prompt;
+    const raw = await this.queryImageAPI(finalPrompt, shape, seed, ref);
 
     const tmp = `${localPath}.raw`;
     fs.writeFileSync(tmp, raw);
@@ -124,8 +126,14 @@ export class VisualAssetService {
   }
 
   /** Tries each configured provider in order, validating that real image bytes came back. */
-  private async queryImageAPI(prompt: string, shape: Shape, seed: number): Promise<Buffer> {
+  private async queryImageAPI(prompt: string, shape: Shape, seed: number, refUrl?: string): Promise<Buffer> {
     const providers: Array<[string, () => Promise<Buffer>, number]> = [];
+    // Documented photo available: use reference-conditioned (Kontext) models first so the face stays true and consistent.
+    if (refUrl) {
+      providers.push(['Pollinations kontext (reference photo)', () => this.pollinationsQueued(prompt, shape, seed, 'kontext', refUrl), 3]);
+      if (config.falApiKey) providers.push(['fal.ai FLUX Kontext (reference photo)', () => this.falKontext(prompt, shape, refUrl), 1]);
+      if (config.replicateApiToken) providers.push(['Replicate FLUX Kontext (reference photo)', () => this.replicateKontext(prompt, shape, refUrl), 1]);
+    }
     if (config.falApiKey) providers.push(['fal.ai FLUX schnell', () => this.fal(prompt, shape, seed), 1]);
     if (config.huggingfaceApiKey) {
       providers.push(['HuggingFace/nscale FLUX schnell', () => this.hfRouter('nscale', prompt, shape, seed), 1]);
@@ -168,9 +176,9 @@ export class VisualAssetService {
   private pollChain: Promise<unknown> = Promise.resolve();
 
   /** One Pollinations request at a time (across overlapping jobs), 3s apart. */
-  private pollinationsQueued(prompt: string, shape: Shape, seed: number, model: string): Promise<Buffer> {
+  private pollinationsQueued(prompt: string, shape: Shape, seed: number, model: string, refUrl?: string): Promise<Buffer> {
     const run = this.pollChain.then(async () => {
-      try { return await this.pollinations(prompt, shape, seed, model); }
+      try { return await this.pollinations(prompt, shape, seed, model, refUrl); }
       finally { await new Promise(r => setTimeout(r, 3000)); }
     });
     this.pollChain = run.catch(() => undefined);
@@ -206,6 +214,34 @@ export class VisualAssetService {
     throw new Error('no image in response');
   }
 
+  private async falKontext(prompt: string, shape: Shape, refUrl: string): Promise<Buffer> {
+    const res = await axios.post(
+      'https://fal.run/fal-ai/flux-pro/kontext',
+      { prompt, image_url: refUrl, aspect_ratio: shape.aspect, num_images: 1, output_format: 'png' },
+      { headers: { Authorization: `Key ${config.falApiKey}` }, timeout: 120000 }
+    );
+    const url = res.data?.images?.[0]?.url;
+    if (!url) throw new Error('no image url in fal kontext response');
+    return this.fetchBytes(url);
+  }
+
+  private async replicateKontext(prompt: string, shape: Shape, refUrl: string): Promise<Buffer> {
+    const headers = { Authorization: `Bearer ${config.replicateApiToken}`, 'Content-Type': 'application/json', Prefer: 'wait=60' };
+    let pred = (
+      await axios.post(
+        'https://api.replicate.com/v1/models/black-forest-labs/flux-kontext-pro/predictions',
+        { input: { prompt, input_image: refUrl, aspect_ratio: shape.aspect, output_format: 'png' } },
+        { headers, timeout: 90000 }
+      )
+    ).data;
+    for (let i = 0; i < 30 && !['succeeded', 'failed', 'canceled'].includes(pred.status); i++) {
+      await new Promise(r => setTimeout(r, 2000));
+      pred = (await axios.get(pred.urls.get, { headers, timeout: 30000 })).data;
+    }
+    if (pred.status !== 'succeeded') throw new Error(`prediction ${pred.status}: ${pred.error || ''}`);
+    return this.fetchBytes(Array.isArray(pred.output) ? pred.output[0] : pred.output);
+  }
+
   private async replicate(prompt: string, shape: Shape, seed: number): Promise<Buffer> {
     const headers = { Authorization: `Bearer ${config.replicateApiToken}`, 'Content-Type': 'application/json' };
     let pred = (
@@ -224,9 +260,9 @@ export class VisualAssetService {
     return this.fetchBytes(out);
   }
 
-  private async pollinations(prompt: string, shape: Shape, seed: number, model: string): Promise<Buffer> {
+  private async pollinations(prompt: string, shape: Shape, seed: number, model: string, refUrl?: string): Promise<Buffer> {
     const p = encodeURIComponent(prompt.replace(/\s+/g, ' ').trim().slice(0, 900));
-    const url = `https://image.pollinations.ai/prompt/${p}?width=${shape.genW}&height=${shape.genH}&seed=${seed}&model=${model}&nologo=true&enhance=false&safe=true`;
+    const url = `https://image.pollinations.ai/prompt/${p}?width=${shape.genW}&height=${shape.genH}&seed=${seed}&model=${model}&nologo=true&enhance=false&safe=true${refUrl ? `&image=${encodeURIComponent(refUrl)}` : ''}`;
     const res = await axios.get(url, { responseType: 'arraybuffer', timeout: 120000, headers: { 'User-Agent': 'SaintPost/1.0', ...(config.pollinationsApiKey ? { Authorization: `Bearer ${config.pollinationsApiKey}` } : {}) } });
     return Buffer.from(res.data);
   }

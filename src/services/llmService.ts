@@ -69,12 +69,18 @@ export class LLMService {
     if (saint.appearance) return saint.appearance;
     if (config.dryRun || !this.openrouterApiKey) return '';
     try {
-      const out = await this.completeJson(`You are a Catholic art-direction assistant. Describe how to DRAW the saint "${saint.name}" so an image model renders the right person consistently.
-Known info: ${saint.short_description || ''} ${saint.era ? `Era: ${saint.era}.` : ''} ${saint.region ? `Region: ${saint.region}.` : ''}
+      const out = await this.completeJson(`You are a meticulous Catholic historian briefing an illustrator. Describe how "${saint.name}" actually looked, so the illustration is faithful to documented history.
 
-Use your own accurate knowledge of this saint's real life (birth/death years, age at death, country). Include: apparent age (the age they are best known at; for saints who died young, their real age at death), gender, complexion/ethnicity typical of their origin, hair, build, and clothing that is correct for their real time and place (a 20th/21st-century saint wears modern everyday clothes such as jeans, sneakers, a polo or hoodie; an ancient saint wears period garments). Do not default to an old bearded man. Do not invent facts you are not sure of.
+SOURCE (only trust this and widely documented photographs/portraits of this exact person):
+${(saint.facts || saint.short_description || '').slice(0, 3000)}
 
-Respond ONLY with JSON: {"appearance": "one sentence, max 45 words, starting with the apparent age and gender, e.g. 'a 15-year-old Italian boy with short dark brown hair, slim build, wearing a red polo shirt, jeans and sneakers'"}`);
+Rules:
+- State the apparent age the saint is best known at (for saints who died young, their real age), gender, typical complexion and hair, and everyday clothing correct for their REAL time and place.
+- Do NOT add a religious habit, robe, cassock, vestments, halo, cross, rosary or any prop unless the SOURCE explicitly says this saint wore/used it (e.g. members of religious orders wear their order's habit; lay people wear ordinary clothes of their era; a teenager of the 1990s wears ordinary modern clothes).
+- Do not invent details. If a detail is not documented, keep it plain and neutral.
+- Do NOT default to an old bearded man.
+
+Respond ONLY with JSON: {"appearance": "one sentence, max 40 words, starting with the apparent age and gender"}`);
       const text = String(out?.appearance || '').trim();
       if (text.length > 15) return text;
     } catch (e: any) {
@@ -173,6 +179,11 @@ Region: ${saint.region || 'unknown - use your own knowledge of this saint'}
 Patronage: ${saint.patronage || 'Church'}
 Short Description: ${saint.short_description || ''}
 
+SOURCE FACTS (documented biography - the ONLY allowed basis for facts):
+${(saint.facts || saint.short_description || 'No source available - say only what is certain about this saint.').slice(0, 3500)}
+
+FACT RULES: Use only facts stated in SOURCE FACTS. Do not invent events, quotes, miracles, places, dates, relationships or objects. If something is not in SOURCE FACTS, leave it out. Keep dates and places accurate.
+
 Please generate a JSON object with the following fields:
 1. "full_story": A 150-200 word engaging story about ${saint.name} written in ${langLabel}. Warm, simple, devotional tone.
 2. "what_we_learn": Array of exactly 3 practical lessons for modern Catholics written in ${langLabel} (max 15 words each, starting with simple action verbs).
@@ -192,6 +203,8 @@ Create a 30-60 second Instagram Reel / YouTube Shorts script for "${saint.name}"
 Language Instruction: The "voiceover" and "text_overlay" fields MUST be written in ${langLabel}. Visual descriptions MUST be in English for image generation models.
 Voiceover rules: each scene's voiceover is ONE or TWO short natural spoken sentences (12-22 words), written exactly as a warm storyteller would SAY it aloud. Write the saint's name and any foreign word in the target script (not Latin letters) so the text-to-speech voice pronounces it correctly. No emojis, no symbols, no hashtags in voiceover. Together all scenes must narrate the full story, the 3 lessons, and the "did you know" fact, and end with a short call to follow.
 Visual rules: each "visual" is a concrete scene (setting, action, lighting); never include text, letters or logos in the image.
+Script fidelity: every scene must depict only events/places stated in the Story Context and the SOURCE below; add no invented events, clothing, props or symbols (no halo, robe, cross or rosary unless documented). Use the real era's technology and settings.
+SOURCE: ${(saint.facts || '').slice(0, 2000)}
 SAINT APPEARANCE (must stay identical in every scene, including illness/death scenes): ${saint.appearance || 'use accurate age, clothing and setting for this saint'}
 Whenever the saint appears in a "visual", describe them as exactly that person (same apparent age, gender, hair and clothing style). NEVER show the saint as an old man/woman unless the appearance above says so. If the saint died young, every scene, including sickness, hospital or death scenes, shows the young person. Keep historical setting and clothing accurate to the saint's real time and place.
 
