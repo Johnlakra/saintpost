@@ -71,3 +71,7 @@ CREATE TABLE IF NOT EXISTS settings (
     value TEXT NOT NULL,
     updated_at TIMESTAMP DEFAULT NOW()
 );
+
+-- Seed/enrichment bookkeeping (safe to re-run)
+ALTER TABLE saints ADD COLUMN IF NOT EXISTS source_text TEXT;
+ALTER TABLE saints ADD COLUMN IF NOT EXISTS enriched BOOLEAN DEFAULT FALSE;

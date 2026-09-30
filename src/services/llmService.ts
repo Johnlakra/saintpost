@@ -57,6 +57,14 @@ export class LLMService {
     return [...new Set([...configured, ...free])].slice(0, 8);
   }
 
+  /** Generic JSON completion used by maintenance scripts (db:enrich). */
+  async completeJson(prompt: string): Promise<any> {
+    const text = await this.queryOpenRouter(prompt);
+    const m = text.replace(/```json|```/g, '').match(/[\[{][\s\S]*[\]}]/);
+    if (!m) throw new Error('LLM did not return JSON');
+    return JSON.parse(m[0]);
+  }
+
   /**
    * Helper to execute completion against OpenRouter API with model fallback rotation
    */
