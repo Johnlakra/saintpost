@@ -5,6 +5,7 @@ import cron from 'node-cron';
 import { config } from './config/env.js';
 import { setupTelegramBot } from './bot/bot.js';
 import { SaintPostPipeline } from './engine/pipeline.js';
+import { db } from './db/index.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -22,6 +23,17 @@ app.use('/audio', express.static(path.join(publicDir, 'audio')));
 // Initialize Telegram Bot
 const bot = setupTelegramBot();
 const pipeline = new SaintPostPipeline();
+
+// Face-reference photos uploaded through Telegram (stored in Neon so they survive redeploys)
+app.get('/ref/:id', async (req, res) => {
+  try {
+    const r = await db.query(`SELECT mime, data FROM reference_images WHERE id = $1`, [parseInt(req.params.id, 10)]);
+    if (!r.rows[0]) return res.status(404).send('Not found');
+    res.set('Content-Type', r.rows[0].mime).set('Cache-Control', 'public, max-age=86400').send(r.rows[0].data);
+  } catch {
+    res.status(404).send('Not found');
+  }
+});
 
 // 1. Health Check Endpoint (For cron-job.org keep-alive every 5 minutes)
 app.get('/health', (req, res) => {
@@ -76,6 +88,27 @@ cron.schedule('30 0 * * *', async () => {
   }
 });
 
+// The "/" command list + the blue Menu button next to the message box
+async function registerTelegramMenu() {
+  try {
+    await bot.telegram.setMyCommands([
+      { command: 'menu', description: '🙏 Open the button menu' },
+      { command: 'today', description: "✝️ Today's feast video" },
+      { command: 'saint', description: '🔎 Video for any saint: /saint <name>' },
+      { command: 'watermark', description: '💧 Logo & text watermark' },
+      { command: 'refimage', description: '🖼 Set a saint\'s face photo' },
+      { command: 'accounts', description: '📱 Connected accounts' },
+      { command: 'status', description: '📊 System status' },
+      { command: 'help', description: '❓ Help' },
+      { command: 'cancel', description: '🛑 Cancel current question' },
+    ]);
+    await bot.telegram.setChatMenuButton({ menuButton: { type: 'commands' } });
+    console.log('✅ Telegram command menu registered');
+  } catch (e: any) {
+    console.warn('⚠️ Could not register Telegram command menu:', e.message);
+  }
+}
+
 // Start Server & Bot
 const PORT = config.port;
 app.listen(PORT, async () => {
@@ -89,10 +122,12 @@ app.listen(PORT, async () => {
     try {
       await bot.telegram.setWebhook(`${config.telegramWebhookUrl}/webhook`);
       console.log(`✅ Telegram Webhook registered: ${config.telegramWebhookUrl}/webhook`);
+      await registerTelegramMenu();
     } catch (e: any) {
       console.warn('⚠️ Telegram webhook setup warning:', e.message);
     }
   } else if (config.botToken && config.nodeEnv === 'development') {
+    registerTelegramMenu();
     bot.launch();
     console.log('🤖 Telegram Bot launched in Long Polling mode (development).');
   }

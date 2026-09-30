@@ -31,3 +31,10 @@ export async function probeDuration(file: string): Promise<number> {
   if (!isFinite(d) || d <= 0) throw new Error(`Could not read duration of ${file}`);
   return d;
 }
+
+export async function probeSize(file: string): Promise<{ w: number; h: number }> {
+  const { stdout } = await run(FFPROBE, ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'csv=s=x:p=0', file]);
+  const [w, h] = stdout.trim().split('x').map(Number);
+  if (!w || !h) throw new Error(`Could not read image size of ${file}`);
+  return { w, h };
+}

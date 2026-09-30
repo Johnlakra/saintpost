@@ -9,6 +9,20 @@ import { PublishingService } from '../services/publishingService.js';
 import { config } from '../config/env.js';
 import { db } from '../db/index.js';
 
+export interface PipelineOptions {
+  /** false = build the video and stop for admin review (menu/preview flows). Default true (daily cron). */
+  publish?: boolean;
+  onProgress?: (message: string) => void;
+}
+
+export interface PostPayloadData {
+  saintName: string;
+  videoUrl: string;
+  coverImageUrl: string;
+  caption: string;
+  hashtags: string;
+}
+
 export interface PipelineResult {
   saint: SaintRecord;
   content: GeneratedContent;
@@ -17,6 +31,8 @@ export interface PipelineResult {
   coverImageUrl: string;
   finalVideoUrl: string;
   publishResult: { successCount: number; errors: string[] };
+  published: boolean;
+  payload: PostPayloadData;
 }
 
 let pipelineBusy = false;
@@ -44,15 +60,25 @@ export class SaintPostPipeline {
   /**
    * Executes the complete 10-Step Automated Flow for a saint in Simple Hindi (Default), English, or Punjabi
    */
+  /** Publish an already-rendered post (used by the Telegram Publish button). */
+  async publishPayload(payload: PostPayloadData) {
+    const result = await this.publishingService.publishToAllActiveAccounts(payload);
+    if (result.successCount > 0) {
+      await db.query(`UPDATE posts SET status = 'posted', posted_at = NOW() WHERE video_url = $1`, [payload.videoUrl]).catch(() => {});
+    }
+    return result;
+  }
+
   async runPipelineForSaint(
     saintInput?: SaintRecord | string,
-    targetLang: 'en' | 'hi' | 'pa' = config.defaultLanguage || 'hi'
+    targetLang: 'en' | 'hi' | 'pa' = config.defaultLanguage || 'hi',
+    opts: PipelineOptions = {}
   ): Promise<PipelineResult> {
     // One render at a time: parallel runs exhaust RAM on the free tier and trip image-API rate limits.
     if (pipelineBusy) throw new Error('Another video is still being generated. Please wait for it to finish.');
     pipelineBusy = true;
     try {
-      return await this.runPipeline(saintInput, targetLang);
+      return await this.runPipeline(saintInput, targetLang, opts);
     } finally {
       pipelineBusy = false;
     }
@@ -60,8 +86,11 @@ export class SaintPostPipeline {
 
   private async runPipeline(
     saintInput: SaintRecord | string | undefined,
-    targetLang: 'en' | 'hi' | 'pa'
+    targetLang: 'en' | 'hi' | 'pa',
+    opts: PipelineOptions
   ): Promise<PipelineResult> {
+    const progress = (m: string) => { try { opts.onProgress?.(m); } catch { /* never break the pipeline on UI errors */ } };
+    const shouldPublish = opts.publish !== false;
     console.log(`\n======================================================`);
     console.log(`🚀 STARTING SAINTPOST AUTOMATION PIPELINE [LANG: ${targetLang.toUpperCase()}]`);
     console.log(`======================================================\n`);
@@ -76,6 +105,7 @@ export class SaintPostPipeline {
       saint = await this.saintFetcher.getSaintForDate(new Date());
     }
     console.log(`✅ Step 1: Loaded Saint Data -> ${saint.name}`);
+    progress(`📖 Found: ${saint.name}. Researching documented facts...`);
 
     // STEP 1a: documented facts + documented photo (cached on the saint row)
     await this.factService.ensureFacts(saint);
@@ -92,6 +122,7 @@ export class SaintPostPipeline {
     // STEP 2: GENERATE CONTENT (LLM in Target Language)
     const content = await this.llmService.generateSaintContentPackage(saint, targetLang);
     console.log(`✅ Step 2: LLM Content Generated (${content.video_script.length} scenes in ${targetLang.toUpperCase()})`);
+    progress('✍️ Script written. Designing detailed scenes...');
 
     // STEP 2b: fact-grounded detailed image prompts (saint dossier + the day's feast)
     const brief = await this.llmService.buildVisualBrief(saint, content.video_script, {
@@ -107,6 +138,7 @@ export class SaintPostPipeline {
     const charSheetResult = await this.visualService.generateCharacterSheet(saint);
     const characterSheetUrl = charSheetResult.url;
     console.log(`✅ Step 3: Saint Character Sheet Generated -> ${characterSheetUrl}`);
+    progress('🎨 Painting cover and scene images (this is the slow part)...');
 
     // STEP 4: GENERATE SCENE IMAGES & COVER IMAGE
     const coverResult = await this.visualService.generateCoverImage(saint, characterSheetUrl, brief?.cover);
@@ -117,6 +149,7 @@ export class SaintPostPipeline {
       characterSheetUrl
     );
     console.log(`✅ Step 4: Visual Images Generated (1 Cover + ${sceneAssets.length} Scenes)`);
+    progress('🎙️ Recording the narration...');
 
     // STEP 5: GENERATE PER-SCENE VOICEOVER (neural TTS). Video timing is driven by the audio.
     const scenes = content.video_script;
@@ -126,6 +159,7 @@ export class SaintPostPipeline {
       targetLang
     );
     console.log(`✅ Step 5: ${audios.length} scene voiceovers generated (${targetLang.toUpperCase()})`);
+    progress('🎞️ Animating scenes...');
 
     // STEP 6: GENERATE VIDEO CLIPS, each exactly as long as its narration (+0.5s breathing room)
     const assemblyScenes: AssemblyScene[] = [];
@@ -141,6 +175,7 @@ export class SaintPostPipeline {
       });
     }
     console.log(`✅ Step 6: ${assemblyScenes.length} video clips generated`);
+    progress('🎬 Assembling the final video...');
 
     // STEP 7: ASSEMBLE VIDEO (FFmpeg)
     const outputFileName = `saintpost_${saint.name.toLowerCase().replace(/[^a-z0-9]/g, '_')}_${targetLang}_${Date.now()}.mp4`;
@@ -153,15 +188,18 @@ export class SaintPostPipeline {
     // STEP 8: CAPTION & HASHTAG PREPARATION
     console.log(`✅ Step 8: Caption Prepared (${content.caption.length} chars, 30 hashtags in ${targetLang.toUpperCase()})`);
 
-    // STEP 9: PUBLISH TO CONNECTED ACCOUNTS
-    const publishResult = await this.publishingService.publishToAllActiveAccounts({
+    // STEP 9: PUBLISH TO CONNECTED ACCOUNTS (skipped in preview mode; admin publishes from the menu)
+    const payload: PostPayloadData = {
       saintName: saint.name,
       videoUrl: finalVideoUrl,
       coverImageUrl: coverImageUrl,
       caption: content.caption,
       hashtags: content.hashtags,
-    });
-    console.log(`✅ Step 9: Published to ${publishResult.successCount} accounts`);
+    };
+    const publishResult = shouldPublish
+      ? await this.publishingService.publishToAllActiveAccounts(payload)
+      : { successCount: 0, errors: [] as string[] };
+    console.log(shouldPublish ? `✅ Step 9: Published to ${publishResult.successCount} accounts` : '✅ Step 9: Preview mode - not published');
 
     // STEP 10: SAVE RECORD TO NEON DB
     try {
@@ -193,6 +231,8 @@ export class SaintPostPipeline {
       coverImageUrl,
       finalVideoUrl,
       publishResult,
+      published: shouldPublish,
+      payload,
     };
   }
 }

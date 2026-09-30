@@ -61,6 +61,23 @@ export class FactService {
     return saint;
   }
 
+  /** Structured birth/death from Wikidata: an authoritative anchor for the timeline. */
+  private async wikidataDates(qid?: string): Promise<string> {
+    if (!qid) return '';
+    const res = await axios.get('https://www.wikidata.org/w/api.php', {
+      headers: UA, timeout: 15000,
+      params: { action: 'wbgetentities', ids: qid, props: 'claims', format: 'json' },
+    });
+    const claims = res.data?.entities?.[qid]?.claims || {};
+    const fmt = (c: any) => {
+      const t: string | undefined = c?.[0]?.mainsnak?.datavalue?.value?.time; // "+2006-10-12T00:00:00Z"
+      const m = t && /^[+-](\d{1,4})-(\d\d)-(\d\d)/.exec(t);
+      return m ? `${m[3] === '00' ? '' : parseInt(m[3], 10) + '/'}${m[2] === '00' ? '' : parseInt(m[2], 10) + '/'}${parseInt(m[1], 10)}` : '';
+    };
+    const born = fmt(claims.P569), died = fmt(claims.P570);
+    return born || died ? `[Wikidata] Born: ${born || 'unknown'}; Died: ${died || 'unknown'} (day/month/year).\n\n` : '';
+  }
+
   /** Whole article as plain text (early life, ministry, death, legacy...) for maximum documented detail. */
   private async fullArticle(title: string): Promise<string> {
     const res = await axios.get('https://en.wikipedia.org/w/api.php', {
@@ -82,7 +99,7 @@ export class FactService {
         timeout: 15000,
         params: {
           action: 'query', format: 'json', generator: 'search', gsrsearch: q, gsrlimit: 3,
-          prop: 'extracts|pageimages|info', exintro: 1, explaintext: 1,
+          prop: 'extracts|pageimages|info|pageprops', ppprop: 'wikibase_item', exintro: 1, explaintext: 1,
           piprop: 'thumbnail', pithumbsize: 768, pilicense: process.env.WIKI_ALLOW_NONFREE_IMAGES === 'true' ? 'any' : 'free', inprop: 'url', redirects: 1,
         },
       });
@@ -93,7 +110,8 @@ export class FactService {
         const img: string | undefined = p.thumbnail?.source;
         const okImg = img && /\\.(jpe?g|png|webp)(\\?|$)/i.test(img) ? img : undefined; // skip SVG/maps/coats of arms
         const full = await this.fullArticle(p.title).catch(() => '');
-        return { title: p.title, url: p.fullurl, extract: (full.length > String(p.extract).length ? full : String(p.extract)).trim(), imageUrl: okImg };
+        const dates = await this.wikidataDates(p.pageprops?.wikibase_item).catch(() => '');
+        return { title: p.title, url: p.fullurl, extract: `${dates}${(full.length > String(p.extract).length ? full : String(p.extract)).trim()}`, imageUrl: okImg };
       }
     }
     return null;
