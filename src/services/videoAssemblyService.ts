@@ -55,8 +55,8 @@ export class VideoAssemblyService {
 
       // Subtitles overlay filter
       if (options.subtitlesSrtPath && fs.existsSync(options.subtitlesSrtPath) && config.enableSubtitles) {
-        const cleanSrtPath = options.subtitlesSrtPath.replace(/\\/g, '/').replace(/:/g, '\\:');
-        filterComplex += `${currentVideoMap}subtitles='${cleanSrtPath}':force_style='FontSize=20,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Alignment=2,MarginV=60'[vsub]; `;
+        const escapedSrtPath = options.subtitlesSrtPath.replace(/\\/g, '/').replace(/'/g, "'\\''").replace(/:/g, '\\:');
+        filterComplex += `${currentVideoMap}subtitles=filename='${escapedSrtPath}':force_style='FontSize=20,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Alignment=2,MarginV=60'[vsub]; `;
         currentVideoMap = '[vsub]';
       }
 
@@ -88,7 +88,20 @@ export class VideoAssemblyService {
       cmd += `-c:v libx264 -preset ultrafast -tune zerolatency -crf 24 -threads 2 -pix_fmt yuv420p "${finalOutputPath}"`;
 
       console.log(`Executing FFmpeg Memory-Optimized Assembly command...`);
-      await execAsync(cmd);
+      try {
+        await execAsync(cmd);
+      } catch (subErr: any) {
+        console.warn('⚠️ FFmpeg assembly with subtitles/filters failed, running clean concat fallback without subtitle filter:', subErr.message);
+        // Clean fallback command without complex subtitle filters
+        let fallbackCmd = `ffmpeg -y -threads 2 -f concat -safe 0 -i "${concatListPath}" `;
+        if (options.voiceoverAudioPath && fs.existsSync(options.voiceoverAudioPath)) {
+          fallbackCmd += `-i "${options.voiceoverAudioPath}" -map 0:v -map 1:a -c:a aac -b:a 128k `;
+        } else {
+          fallbackCmd += `-map 0:v -an `;
+        }
+        fallbackCmd += `-c:v libx264 -preset ultrafast -tune zerolatency -crf 24 -threads 2 -pix_fmt yuv420p "${finalOutputPath}"`;
+        await execAsync(fallbackCmd);
+      }
 
       // Cleanup temp concat list and intermediate scene clip files to free disk and RAM
       if (fs.existsSync(concatListPath)) fs.unlinkSync(concatListPath);

@@ -34,12 +34,13 @@ app.get('/health', (req, res) => {
   });
 });
 
-// 2. Telegram Webhook Endpoint
+// 2. Telegram Webhook Endpoint (Instantly Acknowledge 200 OK to prevent Telegram retry loops)
 app.post('/webhook', (req, res) => {
+  res.status(200).send('OK');
   if (config.botToken) {
-    bot.handleUpdate(req.body, res);
-  } else {
-    res.status(200).send('Bot Token not set. Running in webhook stub mode.');
+    bot.handleUpdate(req.body).catch(err => {
+      console.error('❌ Background webhook update error:', err);
+    });
   }
 });
 

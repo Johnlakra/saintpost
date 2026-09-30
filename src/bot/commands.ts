@@ -6,11 +6,27 @@ import { db } from '../db/index.js';
 
 const pipeline = new SaintPostPipeline();
 const fetcher = new SaintFetcherService();
+const processedUpdateIds = new Set<number>();
 
 /**
- * Access Control Middleware: Only admins listed in ADMIN_IDS can execute commands
+ * Access Control Middleware & Update Deduplication Guard
  */
 export function adminAuthMiddleware(ctx: Context, next: () => Promise<void>) {
+  // Prevent duplicate Telegram message retries
+  const updateId = ctx.update?.update_id;
+  if (updateId) {
+    if (processedUpdateIds.has(updateId)) {
+      console.log(`⚠️ Ignored duplicate Telegram retry update ID: ${updateId}`);
+      return;
+    }
+    processedUpdateIds.add(updateId);
+    // Keep set size manageable
+    if (processedUpdateIds.size > 1000) {
+      const oldest = Array.from(processedUpdateIds).slice(0, 500);
+      oldest.forEach(id => processedUpdateIds.delete(id));
+    }
+  }
+
   const userId = ctx.from?.id.toString() || '';
   
   if (config.adminIds.length > 0 && !config.adminIds.includes(userId)) {

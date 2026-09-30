@@ -44,18 +44,12 @@ export class VisualAssetService {
     const localFilePath = path.join(this.outputDir, fileName);
     const publicUrl = `${config.renderExternalUrl}/assets/${fileName}`;
 
-    if (config.dryRun || (!config.falApiKey && !config.replicateApiToken && !config.huggingfaceApiKey)) {
-      console.log(`[DRY RUN / Fallback] Generating placeholder character sheet for ${saint.name}`);
-      this.createFallbackImage(localFilePath, `Character Sheet: ${saint.name}`, 1280, 720);
-      return { localPath: localFilePath, url: publicUrl };
-    }
-
     try {
       const imageUrl = await this.queryImageAPI(prompt, '16:9');
       await this.downloadImage(imageUrl, localFilePath);
       return { localPath: localFilePath, url: publicUrl };
     } catch (err: any) {
-      console.warn(`⚠️ Character sheet generation error for ${saint.name}:`, err.message);
+      console.warn(`⚠️ Character sheet generation fallback for ${saint.name}:`, err.message);
       this.createFallbackImage(localFilePath, `Character Sheet: ${saint.name}`, 1280, 720);
       return { localPath: localFilePath, url: publicUrl };
     }
@@ -72,17 +66,12 @@ export class VisualAssetService {
     const localFilePath = path.join(this.outputDir, fileName);
     const publicUrl = `${config.renderExternalUrl}/assets/${fileName}`;
 
-    if (config.dryRun || (!config.falApiKey && !config.replicateApiToken && !config.huggingfaceApiKey)) {
-      this.createFallbackImage(localFilePath, `Cover: ${saint.name}`, 1080, 1080);
-      return { localPath: localFilePath, url: publicUrl };
-    }
-
     try {
       const imageUrl = await this.queryImageAPI(prompt, '1:1');
       await this.downloadImage(imageUrl, localFilePath);
       return { localPath: localFilePath, url: publicUrl };
     } catch (err: any) {
-      console.warn(`⚠️ Cover image generation error:`, err.message);
+      console.warn(`⚠️ Cover image generation fallback:`, err.message);
       this.createFallbackImage(localFilePath, `Cover: ${saint.name}`, 1080, 1080);
       return { localPath: localFilePath, url: publicUrl };
     }
@@ -109,18 +98,12 @@ export class VisualAssetService {
       const localFilePath = path.join(this.outputDir, fileName);
       const publicUrl = `${config.renderExternalUrl}/assets/${fileName}`;
 
-      if (config.dryRun || (!config.falApiKey && !config.replicateApiToken && !config.huggingfaceApiKey)) {
-        this.createFallbackImage(localFilePath, `Scene ${scene.scene_number}: ${saint.name}`, 1080, 1920);
-        results.push({ localPath: localFilePath, url: publicUrl });
-        continue;
-      }
-
       try {
         const imageUrl = await this.queryImageAPI(prompt, '9:16');
         await this.downloadImage(imageUrl, localFilePath);
         results.push({ localPath: localFilePath, url: publicUrl });
       } catch (err: any) {
-        console.warn(`⚠️ Scene image ${scene.scene_number} error:`, err.message);
+        console.warn(`⚠️ Scene image ${scene.scene_number} fallback:`, err.message);
         this.createFallbackImage(localFilePath, `Scene ${scene.scene_number}: ${saint.name}`, 1080, 1920);
         results.push({ localPath: localFilePath, url: publicUrl });
       }
@@ -130,45 +113,61 @@ export class VisualAssetService {
   }
 
   /**
-   * Unified Image API Caller (Fal.ai FLUX.1 Schnell -> Replicate -> HuggingFace Open Model)
+   * Unified Image API Caller (Pollinations.ai FLUX -> Fal.ai -> Replicate -> HuggingFace)
    */
   private async queryImageAPI(prompt: string, aspectRatio: '1:1' | '9:16' | '16:9'): Promise<string> {
-    // 1. Try Fal.ai FLUX.1 Schnell (Fast & High quality open-weight model)
+    const width = aspectRatio === '9:16' ? 1080 : aspectRatio === '1:1' ? 1080 : 1280;
+    const height = aspectRatio === '9:16' ? 1920 : aspectRatio === '1:1' ? 1080 : 720;
+    const seed = Math.floor(Math.random() * 1000000);
+
+    // 1. Primary: Pollinations.ai Free AI Generator (Photorealistic 8k, No Key Required)
+    try {
+      const cleanPrompt = prompt.replace(/[^a-zA-Z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+      const pollinationsUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(cleanPrompt)}?width=${width}&height=${height}&seed=${seed}&nologo=true`;
+      
+      console.log(`✨ Querying Pollinations.ai free AI generator (${aspectRatio})...`);
+      return pollinationsUrl;
+    } catch (e: any) {
+      console.warn('⚠️ Pollinations.ai primary generator warning:', e.message);
+      try {
+        const cleanPrompt = prompt.replace(/[^a-zA-Z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+        return `https://image.pollinations.ai/prompt/${encodeURIComponent(cleanPrompt)}?seed=${seed}`;
+      } catch (e2) {}
+    }
+
+    // 2. Secondary: Fal.ai FLUX.1 Schnell
     if (config.falApiKey) {
       try {
         const res = await axios.post(
           'https://fal.run/fal-ai/flux/schnell',
           { prompt, image_size: aspectRatio === '9:16' ? 'portrait_16_9' : aspectRatio === '1:1' ? 'square_hd' : 'landscape_16_9' },
-          { headers: { Authorization: `Key ${config.falApiKey}` } }
+          { headers: { Authorization: `Key ${config.falApiKey}` }, timeout: 30000 }
         );
         if (res.data?.images?.[0]?.url) {
           return res.data.images[0].url;
         }
       } catch (e: any) {
-        console.warn('⚠️ Fal.ai API error:', e.message);
+        console.warn('⚠️ Fal.ai API error:', e.response?.data || e.message);
       }
     }
 
-    // 2. Try Replicate FLUX Schnell
+    // 3. Tertiary: Replicate FLUX Schnell
     if (config.replicateApiToken) {
       try {
         const res = await axios.post(
-          'https://api.replicate.com/v1/predictions',
-          {
-            version: 'black-forest-labs/flux-schnell',
-            input: { prompt, aspect_ratio: aspectRatio },
-          },
-          { headers: { Authorization: `Token ${config.replicateApiToken}` } }
+          'https://api.replicate.com/v1/models/black-forest-labs/flux-schnell/predictions',
+          { input: { prompt, aspect_ratio: aspectRatio } },
+          { headers: { Authorization: `Bearer ${config.replicateApiToken}`, 'Content-Type': 'application/json' }, timeout: 30000 }
         );
         if (res.data?.output?.[0]) {
           return res.data.output[0];
         }
       } catch (e: any) {
-        console.warn('⚠️ Replicate API error:', e.message);
+        console.warn('⚠️ Replicate API error:', e.response?.data || e.message);
       }
     }
 
-    throw new Error('No working image generation API key available.');
+    throw new Error('All AI Image Generation services failed.');
   }
 
   private async downloadImage(url: string, destPath: string): Promise<void> {

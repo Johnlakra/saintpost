@@ -3,6 +3,7 @@ import util from 'util';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import * as googleTTS from 'google-tts-api';
 import { config } from '../config/env.js';
 
 const execAsync = util.promisify(exec);
@@ -26,51 +27,65 @@ export class TTSService {
   }
 
   /**
-   * Generates voiceover narration using Microsoft Edge TTS in Hindi (Default), English, or Punjabi
+   * Generates audible voiceover narration in Hindi, Punjabi, or English using Google TTS & Edge TTS fallback
    */
   async generateVoiceover(
     text: string,
     saintName: string,
     targetLang: 'en' | 'hi' | 'pa' = config.defaultLanguage || 'hi'
   ): Promise<TTSResult> {
-    console.log(`🎙️ Generating voiceover narration for ${saintName} [Lang: ${targetLang.toUpperCase()}]...`);
+    console.log(`🎙️ Generating audible voiceover narration for ${saintName} [Lang: ${targetLang.toUpperCase()}]...`);
 
     const sanitizedName = saintName.toLowerCase().replace(/[^a-z0-9]/g, '_');
     const fileName = `narration_${sanitizedName}_${targetLang}_${Date.now()}.mp3`;
     const audioPath = path.join(this.outputDir, fileName);
     const audioUrl = `${config.renderExternalUrl}/audio/${fileName}`;
 
-    if (config.dryRun) {
-      console.log('[DRY RUN] Creating silent fallback voiceover audio track...');
-      await this.generateSilentAudio(audioPath, 30);
-      return { audioPath, audioUrl };
+    // 1. Primary Synthesizer: google-tts-api (Pure Node.js, 100% audible, no python required)
+    try {
+      const cleanText = text.replace(/[*#]/g, '').trim();
+      const langCode = targetLang === 'pa' ? 'pa' : targetLang === 'hi' ? 'hi' : 'en';
+
+      console.log(`   └ Synthesizing audio via Google TTS (${langCode})...`);
+      const results = await googleTTS.getAllAudioBase64(cleanText, {
+        lang: langCode,
+        slow: false,
+        host: 'https://translate.google.com',
+        timeout: 15000,
+      });
+
+      const buffers = results.map(r => Buffer.from(r.base64, 'base64'));
+      const combinedAudio = Buffer.concat(buffers);
+      fs.writeFileSync(audioPath, combinedAudio);
+
+      console.log(`✅ Audible Voiceover Audio generated: ${audioPath} (${combinedAudio.byteLength} bytes)`);
+
+      // Subtitle generation
+      const srtPath = await this.generateSubtitlesSRT(text, audioPath);
+      return { audioPath, audioUrl, subtitlesPath: srtPath };
+    } catch (gErr: any) {
+      console.warn('⚠️ Google TTS synthesis warning:', gErr.message);
     }
 
-    // Voice Selection Mapping based on target language
+    // 2. Secondary Synthesizer: Microsoft Edge TTS CLI
     const voiceMap: Record<string, string> = {
       en: config.edgeTtsVoice || 'en-US-AriaNeural',
       hi: 'hi-IN-SwaraNeural',
       pa: 'pa-IN-OjasNeural',
     };
-
-    const voice = voiceMap[targetLang] || voiceMap.en;
+    const voice = voiceMap[targetLang] || voiceMap.hi;
 
     try {
-      // Clean text string for shell safety
       const cleanText = text.replace(/"/g, '\\"').replace(/\n/g, ' ');
-      
       const cmd = `edge-tts --voice "${voice}" --text "${cleanText}" --write-media "${audioPath}"`;
       await execAsync(cmd);
 
       console.log(`✅ Voiceover generated via Edge-TTS [Voice: ${voice}]: ${audioPath}`);
-
-      // Subtitle generation
       const srtPath = await this.generateSubtitlesSRT(text, audioPath);
-
       return { audioPath, audioUrl, subtitlesPath: srtPath };
     } catch (err: any) {
-      console.warn(`⚠️ Edge-TTS CLI error for voice ${voice}, creating fallback audio:`, err.message);
-      await this.generateSilentAudio(audioPath, 25);
+      console.warn(`⚠️ Edge-TTS CLI error for voice ${voice}:`, err.message);
+      await this.generateSilentAudio(audioPath, 20);
       return { audioPath, audioUrl };
     }
   }
@@ -80,11 +95,11 @@ export class TTSService {
    */
   private async generateSubtitlesSRT(text: string, audioPath: string): Promise<string> {
     const srtPath = audioPath.replace(/\.mp3$/, '.srt');
-    const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
+    const sentences = text.match(/[^.!?\n]+[.!?\n]+/g) || [text];
     
     let srtContent = '';
     let currentTime = 0;
-    const secondsPerChar = 0.06; // average reading pace
+    const secondsPerChar = 0.06;
 
     sentences.forEach((sentence, idx) => {
       const duration = Math.max(2, sentence.length * secondsPerChar);
@@ -96,7 +111,7 @@ export class TTSService {
     });
 
     fs.writeFileSync(srtPath, srtContent);
-    console.log(`📝 Generated burned-in subtitles SRT file: ${srtPath}`);
+    console.log(`📝 Generated subtitles SRT file: ${srtPath}`);
     return srtPath;
   }
 
@@ -120,7 +135,6 @@ export class TTSService {
       const cmd = `ffmpeg -y -f lavfi -i anullsrc=r=44100:cl=stereo -t ${durationSec} -q:a 9 -acodec libmp3lame "${outputPath}"`;
       await execAsync(cmd);
     } catch (e: any) {
-      // If ffmpeg is absent, write dummy buffer
       fs.writeFileSync(outputPath, Buffer.alloc(1024));
     }
   }
