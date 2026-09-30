@@ -75,3 +75,4 @@ CREATE TABLE IF NOT EXISTS settings (
 -- Seed/enrichment bookkeeping (safe to re-run)
 ALTER TABLE saints ADD COLUMN IF NOT EXISTS source_text TEXT;
 ALTER TABLE saints ADD COLUMN IF NOT EXISTS enriched BOOLEAN DEFAULT FALSE;
+ALTER TABLE saints ADD COLUMN IF NOT EXISTS appearance TEXT;

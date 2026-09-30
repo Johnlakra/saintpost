@@ -24,6 +24,7 @@ export interface SaintRecord {
   era?: string;
   region?: string;
   symbols?: string[];
+  appearance?: string; // how to draw the saint consistently (age, gender, hair, period clothing)
 }
 
 export class SaintFetcherService {
@@ -196,8 +197,8 @@ export class SaintFetcherService {
       patronage: 'Faithful Christian Community',
       short_description: `Holy Servant of God, ${name}`,
       full_story: `${name} lived a faithful life dedicated to God and neighbor.`,
-      era: 'Christian Era',
-      region: 'Holy Land',
+      era: '',
+      region: '',
       symbols: ['cross', 'halo'],
     };
   }

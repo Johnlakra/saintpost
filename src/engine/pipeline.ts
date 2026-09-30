@@ -74,6 +74,14 @@ export class SaintPostPipeline {
     }
     console.log(`✅ Step 1: Loaded Saint Data -> ${saint.name}`);
 
+    // STEP 1b: casting sheet (age/gender/clothing) so every scene shows the right person
+    await db.query(`ALTER TABLE saints ADD COLUMN IF NOT EXISTS appearance TEXT`).catch(() => {});
+    saint.appearance = await this.llmService.getAppearance(saint);
+    if (saint.appearance) {
+      console.log(`🧑 Appearance: ${saint.appearance}`);
+      if (saint.id) db.query(`UPDATE saints SET appearance = $2 WHERE id = $1`, [saint.id, saint.appearance]).catch(() => {});
+    }
+
     // STEP 2: GENERATE CONTENT (LLM in Target Language)
     const content = await this.llmService.generateSaintContentPackage(saint, targetLang);
     console.log(`✅ Step 2: LLM Content Generated (${content.video_script.length} scenes in ${targetLang.toUpperCase()})`);
