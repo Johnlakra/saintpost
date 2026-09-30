@@ -20,6 +20,11 @@ export const config = {
   // AI Content Models (OpenRouter / Free Tier)
   openrouterApiKey: process.env.OPENROUTER_API_KEY || '',
   openrouterModel: process.env.OPENROUTER_MODEL || '',
+  // Extra free-tier image providers (all optional)
+  geminiApiKey: process.env.GEMINI_API_KEY || '',
+  cloudflareAccountId: process.env.CLOUDFLARE_ACCOUNT_ID || '',
+  cloudflareApiToken: process.env.CLOUDFLARE_API_TOKEN || '',
+  togetherApiKey: process.env.TOGETHER_API_KEY || '',
   pollinationsApiKey: process.env.POLLINATIONS_API_KEY || '',
   huggingfaceApiKey: process.env.HUGGINGFACE_API_KEY || '',
 

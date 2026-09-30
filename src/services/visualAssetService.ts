@@ -130,13 +130,18 @@ export class VisualAssetService {
   /** Tries each configured provider in order, validating that real image bytes came back. */
   private async queryImageAPI(prompt: string, shape: Shape, seed: number, refUrl?: string): Promise<Buffer> {
     const providers: Array<[string, () => Promise<Buffer>, number]> = [];
-    // Documented photo available: use reference-conditioned (Kontext) models first so the face stays true and consistent.
+    // Documented photo available: use reference-conditioned models first so the face stays true and consistent.
     if (refUrl) {
+      if (config.geminiApiKey) providers.push(['Gemini image (reference photo)', () => this.gemini(prompt, shape, refUrl), 1]);
       providers.push(['Pollinations kontext (reference photo)', () => this.pollinationsQueued(prompt, shape, seed, 'kontext', refUrl), 3]);
       if (config.falApiKey) providers.push(['fal.ai FLUX Kontext (reference photo)', () => this.falKontext(prompt, shape, refUrl), 1]);
       if (config.replicateApiToken) providers.push(['Replicate FLUX Kontext (reference photo)', () => this.replicateKontext(prompt, shape, refUrl), 1]);
     }
+    // Text-to-image chain, best quality first. Providers without a key are simply skipped.
     if (config.falApiKey) providers.push(['fal.ai FLUX schnell', () => this.fal(prompt, shape, seed), 1]);
+    if (config.geminiApiKey && !refUrl) providers.push(['Gemini image', () => this.gemini(prompt, shape), 1]);
+    if (config.cloudflareApiToken && config.cloudflareAccountId) providers.push(['Cloudflare FLUX schnell', () => this.cloudflare(prompt, shape, seed), 1]);
+    if (config.togetherApiKey) providers.push(['Together FLUX schnell (free)', () => this.together(prompt, shape, seed), 1]);
     if (config.huggingfaceApiKey) {
       providers.push(['HuggingFace/nscale FLUX schnell', () => this.hfRouter('nscale', prompt, shape, seed), 1]);
       providers.push(['HuggingFace/together FLUX schnell', () => this.hfRouter('together', prompt, shape, seed), 1]);
@@ -160,6 +165,12 @@ export class VisualAssetService {
           const msg = this.describeError(e);
           console.warn(`     ✗ ${name} attempt ${attempt}/${tries}: ${msg}`);
           const st = e.response?.status;
+          if (st === 429 && !name.startsWith('Pollinations')) {
+            // Daily/minute quota hit: rest this provider for a few minutes instead of hammering it.
+            this.disabledUntil.set(name, Date.now() + 5 * 60 * 1000);
+            errors.push(`${name}: ${msg}`);
+            break;
+          }
           if ((st === 401 || st === 402 || st === 403) && !name.startsWith('Pollinations')) {
             // Key locked / out of credit: don't waste time (or quota) retrying for 30 minutes.
             this.disabledUntil.set(name, Date.now() + 30 * 60 * 1000);
@@ -226,6 +237,63 @@ export class VisualAssetService {
       `https://router.huggingface.co/${provider}/v1/images/generations`,
       { model: 'black-forest-labs/FLUX.1-schnell', prompt, response_format: 'b64_json', width: this.capped(shape).w, height: this.capped(shape).h, size: `${this.capped(shape).w}x${this.capped(shape).h}`, seed, steps: 4, n: 1 },
       { headers: { Authorization: `Bearer ${config.huggingfaceApiKey}` }, timeout: 120000 }
+    );
+    const item = res.data?.data?.[0];
+    if (item?.b64_json) return Buffer.from(item.b64_json, 'base64');
+    if (item?.url) return this.fetchBytes(item.url);
+    throw new Error('no image in response');
+  }
+
+  /** Google Gemini image model (free tier). Also accepts a reference photo to keep a real face consistent. */
+  private async gemini(prompt: string, shape: Shape, refUrl?: string): Promise<Buffer> {
+    const parts: any[] = [];
+    if (refUrl) {
+      const ref = await axios.get(refUrl, { responseType: 'arraybuffer', timeout: 30000, headers: { 'User-Agent': 'SaintPostBot/1.0' } });
+      const mime = String(ref.headers['content-type'] || 'image/jpeg').split(';')[0];
+      parts.push({ inline_data: { mime_type: mime, data: Buffer.from(ref.data).toString('base64') } });
+    }
+    parts.push({ text: prompt });
+    const model = process.env.GEMINI_IMAGE_MODEL || 'gemini-2.5-flash-image';
+    const res = await axios.post(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+      { contents: [{ parts }], generationConfig: { responseModalities: ['IMAGE'], imageConfig: { aspectRatio: shape.aspect } } },
+      { headers: { 'x-goog-api-key': config.geminiApiKey }, timeout: 120000 }
+    );
+    const out: any[] = res.data?.candidates?.[0]?.content?.parts || [];
+    const img = out.find(p => (p.inlineData || p.inline_data)?.data);
+    const b64 = (img?.inlineData || img?.inline_data)?.data;
+    if (!b64) throw new Error(`no image returned (${res.data?.candidates?.[0]?.finishReason || res.data?.promptFeedback?.blockReason || 'unknown reason'})`);
+    return Buffer.from(b64, 'base64');
+  }
+
+  /** Cloudflare Workers AI FLUX.1 schnell (daily free allowance). */
+  private async cloudflare(prompt: string, shape: Shape, seed: number): Promise<Buffer> {
+    const url = `https://api.cloudflare.com/client/v4/accounts/${config.cloudflareAccountId}/ai/run/@cf/black-forest-labs/flux-1-schnell`;
+    const headers = { Authorization: `Bearer ${config.cloudflareApiToken}` };
+    const { w, h } = this.capped(shape, 1024);
+    let res;
+    try {
+      res = await axios.post(url, { prompt: prompt.slice(0, 2000), steps: 6, seed, width: w, height: h }, { headers, timeout: 90000 });
+    } catch (e: any) {
+      // If this model build rejects width/height it can only do square images.
+      if (e.response?.status === 400 && shape.aspect === '1:1') {
+        res = await axios.post(url, { prompt: prompt.slice(0, 2000), steps: 6, seed }, { headers, timeout: 90000 });
+      } else {
+        throw e;
+      }
+    }
+    const b64 = res.data?.result?.image;
+    if (!b64) throw new Error(`no image in response: ${JSON.stringify(res.data?.errors || res.data).slice(0, 120)}`);
+    return Buffer.from(b64, 'base64');
+  }
+
+  /** Together AI's free FLUX.1 schnell endpoint. */
+  private async together(prompt: string, shape: Shape, seed: number): Promise<Buffer> {
+    const { w, h } = this.capped(shape, 1344);
+    const res = await axios.post(
+      'https://api.together.xyz/v1/images/generations',
+      { model: process.env.TOGETHER_IMAGE_MODEL || 'black-forest-labs/FLUX.1-schnell-Free', prompt, width: w, height: h, steps: 4, seed, n: 1, response_format: 'b64_json' },
+      { headers: { Authorization: `Bearer ${config.togetherApiKey}` }, timeout: 120000 }
     );
     const item = res.data?.data?.[0];
     if (item?.b64_json) return Buffer.from(item.b64_json, 'base64');
