@@ -45,9 +45,23 @@ export class SaintFetcherService {
 
     console.log(`🔍 Fetching Saint of the Day for Month: ${month}, Day: ${day}...`);
 
-    // Tier 1: Sanctus NPM Package
+    // Tier 0: Neon DB (seeded for all 366 days, enriched to structured English)
     try {
-      const sanctusSaint: any = this.sanctus.getSaintFromMonthDay(month, day);
+      const res = await db.query(
+        `SELECT * FROM saints WHERE feast_month = $1 AND feast_day = $2 ORDER BY enriched DESC, id LIMIT 1`,
+        [month, day]
+      );
+      if (res.rows.length > 0) {
+        console.log(`✅ Tier 0 (Neon DB) matched: ${res.rows[0].name}`);
+        return res.rows[0];
+      }
+    } catch (dbErr: any) {
+      console.warn('⚠️ Neon DB lookup skipped/error:', dbErr.message);
+    }
+
+    // Tier 1: Sanctus NPM Package (note: its month argument is 0-based, so use getSaint(date))
+    try {
+      const sanctusSaint: any = this.sanctus.getSaint(date);
       if (sanctusSaint && sanctusSaint.name) {
         console.log(`✅ Tier 1 (Sanctus package) matched: ${sanctusSaint.name}`);
         return {

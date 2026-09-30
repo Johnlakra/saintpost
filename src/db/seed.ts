@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import Sanctus from 'sanctus';
 import { db, pool } from './index.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -38,7 +39,33 @@ async function seedSaints() {
         ]
       );
     }
-    console.log(`✅ Seeded ${saints.length} saints into Neon database.`);
+    console.log(`✅ Seeded ${saints.length} curated saints into Neon database.`);
+
+    // One primary saint for EVERY day of the year (366) from the sanctus dataset.
+    // Curated entries above win for their dates. Text is Spanish; run `npm run db:enrich` to translate/structure it.
+    await db.query(`ALTER TABLE saints ADD COLUMN IF NOT EXISTS source_text TEXT`);
+    await db.query(`ALTER TABLE saints ADD COLUMN IF NOT EXISTS enriched BOOLEAN DEFAULT FALSE`);
+    await db.query(`UPDATE saints SET enriched = TRUE WHERE full_story IS NOT NULL AND source_text IS NULL`);
+    const sanctus = new Sanctus();
+    const ranks = ['Solemnity', 'Memorial', 'Optional Memorial'];
+    let added = 0;
+    for (let i = 0; i < 366; i++) {
+      const dt = new Date(2024, 0, 1 + i); // leap year so Feb 29 is included
+      const month = dt.getMonth() + 1, day = dt.getDate();
+      const exists = await db.query(`SELECT 1 FROM saints WHERE feast_month = $1 AND feast_day = $2 LIMIT 1`, [month, day]);
+      if (exists.rows.length) continue;
+      const list = sanctus.getSaintsOfDay(dt);
+      if (!list.length) continue;
+      const primary = [...list].sort((a: any, b: any) => (a.category ?? 9) - (b.category ?? 9))[0] as any;
+      await db.query(
+        `INSERT INTO saints (name, feast_month, feast_day, rank, short_description, source_text, enriched)
+         VALUES ($1, $2, $3, $4, $5, $6, FALSE)`,
+        [primary.name, month, day, ranks[primary.category] || 'Memorial', primary.shortDescription || primary.description || '', [primary.description, primary.birth, primary.dead].filter(Boolean).join('\n')]
+      );
+      added++;
+    }
+    const total = await db.query(`SELECT count(*)::int AS n, count(DISTINCT (feast_month, feast_day))::int AS days FROM saints`);
+    console.log(`✅ Added ${added} saints from sanctus. Table now has ${total.rows[0].n} saints covering ${total.rows[0].days}/366 days.`);
   } catch (error) {
     console.error('❌ Seeding failed:', error);
   } finally {
