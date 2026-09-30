@@ -22,6 +22,7 @@ export interface GeneratedContent {
 export class LLMService {
   private openrouterApiKey: string;
   private primaryModel: string;
+  private badModels = new Set<string>(); // models that hard-failed (404/400/403): don't retry them this run
 
   constructor() {
     this.openrouterApiKey = config.openrouterApiKey;
@@ -54,7 +55,9 @@ export class LLMService {
       .sort((a, b) => Number(pref.test(b.id)) - Number(pref.test(a.id)) || (b.context_length || 0) - (a.context_length || 0))
       .map(m => m.id);
 
-    return [...new Set([...configured, ...free])].slice(0, 8);
+    // Proven cheap multilingual default, tried before the (unreliable) free tier.
+    const dependable = ['deepseek/deepseek-chat'].filter(m => !liveIds.size || liveIds.has(m));
+    return [...new Set([...configured, ...dependable, ...free])].filter(m => !this.badModels.has(m)).slice(0, 8);
   }
 
   /** Generic JSON completion used by maintenance scripts (db:enrich). */
@@ -102,6 +105,8 @@ export class LLMService {
         if (text) return String(text).trim();
       } catch (err: any) {
         const detail = err.response?.data?.error?.message || err.message;
+        const status = err.response?.status;
+        if (status && status !== 429 && status < 500) this.badModels.add(model);
         console.warn(`⚠️ OpenRouter error on model ${model}: ${detail}`);
       }
     }
