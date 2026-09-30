@@ -79,6 +79,7 @@ export class VisualAssetService {
   }
 
   async generateCoverImage(saint: SaintRecord, _characterSheetUrl?: string, detailedPrompt?: string): Promise<ImageAssetResult> {
+    this.anchor = null;
     console.log(`🖼️ Generating 1:1 Cover Image for ${saint.name}...`);
     const prompt = detailedPrompt
       ? `${this.characterDescriptor(saint)}. ${detailedPrompt}. ${this.styleFor(saint)}`
@@ -111,10 +112,13 @@ export class VisualAssetService {
   private async makeImage(kind: string, saint: SaintRecord, prompt: string, shape: Shape, seed: number): Promise<ImageAssetResult> {
     const fileName = `${kind}_${slug(saint.name)}_${Date.now()}.png`;
     const localPath = path.join(this.outputDir, fileName);
-    const ref = saint.reference_image_url;
-    const finalPrompt = ref
+    const documented = saint.reference_image_url;
+    const ref = documented || (kind !== 'cover' ? this.anchor?.url : undefined);
+    const finalPrompt = documented
       ? `Keep the EXACT same real person as in the reference photo: identical face, age, skin tone, hair and clothing. Do not add robes, halos, crosses or props that are not in the photo. ${prompt}`
-      : prompt;
+      : ref
+        ? `Keep the exact same character as in the reference image: identical face, age, skin tone, hair and clothing style. ${prompt}`
+        : prompt;
     const raw = await this.queryImageAPI(finalPrompt, shape, seed, ref);
 
     const tmp = `${localPath}.raw`;
@@ -124,7 +128,9 @@ export class VisualAssetService {
     } finally {
       fs.rmSync(tmp, { force: true });
     }
-    return { localPath, url: `${config.renderExternalUrl}/assets/${fileName}` };
+    const result = { localPath, url: `${config.renderExternalUrl}/assets/${fileName}` };
+    if (kind === 'cover' && !documented) this.anchor = { url: result.url, path: localPath };
+    return result;
   }
 
   /** Tries each configured provider in order, validating that real image bytes came back. */
@@ -195,6 +201,9 @@ export class VisualAssetService {
     return `HTTP ${e.response.status}${body ? ` ${body.replace(/\s+/g, ' ').slice(0, 160)}` : ''}`;
   }
 
+  /** In-run face anchor: when no documented photo exists, the first cover image is reused as the reference for every scene. */
+  private anchor: { url: string; path: string } | null = null;
+
   private disabledUntil = new Map<string, number>();
   private pollChain: Promise<unknown> = Promise.resolve();
 
@@ -248,9 +257,14 @@ export class VisualAssetService {
   private async gemini(prompt: string, shape: Shape, refUrl?: string): Promise<Buffer> {
     const parts: any[] = [];
     if (refUrl) {
-      const ref = await axios.get(refUrl, { responseType: 'arraybuffer', timeout: 30000, headers: { 'User-Agent': 'SaintPostBot/1.0' } });
-      const mime = String(ref.headers['content-type'] || 'image/jpeg').split(';')[0];
-      parts.push({ inline_data: { mime_type: mime, data: Buffer.from(ref.data).toString('base64') } });
+      if (this.anchor && refUrl === this.anchor.url) {
+        // our own just-generated image: read from disk instead of calling ourselves over HTTP
+        parts.push({ inline_data: { mime_type: 'image/png', data: fs.readFileSync(this.anchor.path).toString('base64') } });
+      } else {
+        const ref = await axios.get(refUrl, { responseType: 'arraybuffer', timeout: 30000, headers: { 'User-Agent': 'SaintPostBot/1.0' } });
+        const mime = String(ref.headers['content-type'] || 'image/jpeg').split(';')[0];
+        parts.push({ inline_data: { mime_type: mime, data: Buffer.from(ref.data).toString('base64') } });
+      }
     }
     parts.push({ text: prompt });
     const model = process.env.GEMINI_IMAGE_MODEL || 'gemini-2.5-flash-image';
