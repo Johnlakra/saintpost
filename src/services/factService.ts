@@ -70,7 +70,7 @@ export class FactService {
         params: {
           action: 'query', format: 'json', generator: 'search', gsrsearch: q, gsrlimit: 3,
           prop: 'extracts|pageimages|info', exintro: 1, explaintext: 1, exchars: 3500,
-          piprop: 'thumbnail', pithumbsize: 768, inprop: 'url', redirects: 1,
+          piprop: 'thumbnail', pithumbsize: 768, pilicense: process.env.WIKI_ALLOW_NONFREE_IMAGES === 'true' ? 'any' : 'free', inprop: 'url', redirects: 1,
         },
       });
       const pages: any[] = Object.values(res.data?.query?.pages || {});

@@ -146,6 +146,8 @@ export class VisualAssetService {
 
     const errors: string[] = [];
     for (const [name, fn, tries] of providers) {
+      const off = this.disabledUntil.get(name);
+      if (off && off > Date.now()) { errors.push(`${name}: disabled (auth/credit problem)`); continue; }
       for (let attempt = 1; attempt <= tries; attempt++) {
         try {
           const buf = await fn();
@@ -155,6 +157,13 @@ export class VisualAssetService {
         } catch (e: any) {
           const msg = this.describeError(e);
           console.warn(`     ✗ ${name} attempt ${attempt}/${tries}: ${msg}`);
+          const st = e.response?.status;
+          if ((st === 401 || st === 402 || st === 403) && !name.startsWith('Pollinations')) {
+            // Key locked / out of credit: don't waste time (or quota) retrying for 30 minutes.
+            this.disabledUntil.set(name, Date.now() + 30 * 60 * 1000);
+            errors.push(`${name}: ${msg}`);
+            break;
+          }
           if (attempt === tries) errors.push(`${name}: ${msg}`);
           else await new Promise(r => setTimeout(r, 6000 * attempt));
         }
@@ -173,6 +182,7 @@ export class VisualAssetService {
     return `HTTP ${e.response.status}${body ? ` ${body.replace(/\s+/g, ' ').slice(0, 160)}` : ''}`;
   }
 
+  private disabledUntil = new Map<string, number>();
   private pollChain: Promise<unknown> = Promise.resolve();
 
   /** One Pollinations request at a time (across overlapping jobs), 3s apart. */

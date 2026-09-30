@@ -77,10 +77,10 @@ ${(saint.facts || saint.short_description || '').slice(0, 3000)}
 Rules:
 - State the apparent age the saint is best known at (for saints who died young, their real age), gender, typical complexion and hair, and everyday clothing correct for their REAL time and place.
 - Do NOT add a religious habit, robe, cassock, vestments, halo, cross, rosary or any prop unless the SOURCE explicitly says this saint wore/used it (e.g. members of religious orders wear their order's habit; lay people wear ordinary clothes of their era; a teenager of the 1990s wears ordinary modern clothes).
-- Do not invent details. If a detail is not documented, keep it plain and neutral.
+- Include ONLY attributes stated in the SOURCE or visible in well-known documented photographs of this exact person. Do NOT add accessories (glasses, jewellery, hats, bags), hairstyles or habits you cannot tie to documentation; if unknown, omit it or keep it plain and neutral.
 - Do NOT default to an old bearded man.
 
-Respond ONLY with JSON: {"appearance": "one sentence, max 40 words, starting with the apparent age and gender"}`);
+Respond ONLY with JSON: {"appearance": "one sentence, max 40 words, starting with the apparent age and gender"}`, 0.1);
       const text = String(out?.appearance || '').trim();
       if (text.length > 15) return text;
     } catch (e: any) {
@@ -90,8 +90,8 @@ Respond ONLY with JSON: {"appearance": "one sentence, max 40 words, starting wit
   }
 
   /** Generic JSON completion used by maintenance scripts (db:enrich). */
-  async completeJson(prompt: string): Promise<any> {
-    const text = await this.queryOpenRouter(prompt);
+  async completeJson(prompt: string, temperature = 0.7): Promise<any> {
+    const text = await this.queryOpenRouter(prompt, undefined, temperature);
     const m = text.replace(/```json|```/g, '').match(/[\[{][\s\S]*[\]}]/);
     if (!m) throw new Error('LLM did not return JSON');
     return JSON.parse(m[0]);
@@ -100,7 +100,7 @@ Respond ONLY with JSON: {"appearance": "one sentence, max 40 words, starting wit
   /**
    * Helper to execute completion against OpenRouter API with model fallback rotation
    */
-  private async queryOpenRouter(prompt: string, modelOverride?: string): Promise<string> {
+  private async queryOpenRouter(prompt: string, modelOverride?: string, temperature = 0.7): Promise<string> {
     if (config.dryRun || !this.openrouterApiKey) {
       console.log(`[DRY RUN] OpenRouter prompt (${modelOverride || this.primaryModel}):\n${prompt.substring(0, 150)}...`);
       return '';
@@ -117,7 +117,7 @@ Respond ONLY with JSON: {"appearance": "one sentence, max 40 words, starting wit
           {
             model: model,
             messages: [{ role: 'user', content: prompt }],
-            temperature: 0.7,
+            temperature,
           },
           {
             headers: {

@@ -5,8 +5,11 @@ import { ffmpeg } from '../utils/media.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-export const VIDEO_W = 1080;
-export const VIDEO_H = 1920;
+// Render's free tier (0.1 CPU / 512 MB) renders 1080p very slowly: default to 720x1280 there.
+// Override with VIDEO_HEIGHT=1920 (width is derived, 9:16).
+const envH = parseInt(process.env.VIDEO_HEIGHT || '', 10);
+export const VIDEO_H = envH > 0 ? envH : process.env.RENDER ? 1280 : 1920;
+export const VIDEO_W = Math.round((VIDEO_H * 9) / 16 / 2) * 2;
 export const FPS = 25;
 
 export class VideoService {
@@ -36,10 +39,10 @@ export class VideoService {
     ];
     const m = moves[(sceneNum - 1) % moves.length];
 
-    // Pre-scale 1.5x so zoompan's sub-pixel steps stay smooth (no shimmer) without huge frames.
+    // Pre-scale 1.25x so zoompan's sub-pixel steps stay smooth (no shimmer) without huge frames.
     const vf =
-      `scale=${Math.round(VIDEO_W * 1.5)}:${Math.round(VIDEO_H * 1.5)}:force_original_aspect_ratio=increase,` +
-      `crop=${Math.round(VIDEO_W * 1.5)}:${Math.round(VIDEO_H * 1.5)},` +
+      `scale=${Math.round(VIDEO_W * 1.25)}:${Math.round(VIDEO_H * 1.25)}:force_original_aspect_ratio=increase,` +
+      `crop=${Math.round(VIDEO_W * 1.25)}:${Math.round(VIDEO_H * 1.25)},` +
       `zoompan=z='${m.z}':x='${m.x}':y='${m.y}':d=${frames}:s=${VIDEO_W}x${VIDEO_H}:fps=${FPS},` +
       `fade=t=in:st=0:d=${fade},fade=t=out:st=${(frames / FPS - fade).toFixed(2)}:d=${fade},format=yuv420p`;
 
@@ -47,7 +50,7 @@ export class VideoService {
       '-i', imagePath,
       '-vf', vf,
       '-frames:v', String(frames),
-      '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22', '-threads', '1',
+      '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23', '-threads', '1',
       '-r', String(FPS), '-pix_fmt', 'yuv420p',
       outputPath,
     ]);

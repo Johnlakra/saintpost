@@ -4,7 +4,6 @@ import { fileURLToPath } from 'url';
 import axios from 'axios';
 import { config } from '../config/env.js';
 import { ffmpeg, FONTS_DIR } from '../utils/media.js';
-import { VIDEO_W, VIDEO_H } from './videoService.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -100,7 +99,7 @@ export class VideoAssemblyService {
           ...args,
           '-filter_complex', fc.replace(/;$/, ''),
           '-map', chain, '-map', '1:a',
-          '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22', '-threads', '2', '-pix_fmt', 'yuv420p',
+          '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23', '-threads', '2', '-pix_fmt', 'yuv420p',
           '-c:a', 'copy', '-shortest', '-movflags', '+faststart',
           finalPath,
         ]);
@@ -128,8 +127,8 @@ export class VideoAssemblyService {
   private buildAss(scenes: AssemblyScene[], brandColor?: string): string {
     const head = `[Script Info]
 ScriptType: v4.00+
-PlayResX: ${VIDEO_W}
-PlayResY: ${VIDEO_H}
+PlayResX: 1080
+PlayResY: 1920
 WrapStyle: 0
 ScaledBorderAndShadow: yes
 
