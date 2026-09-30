@@ -1,17 +1,10 @@
 FROM node:22-slim
 
-# Install system dependencies: FFmpeg, Python3, pip, curl, git
+# System deps (FFmpeg/ffprobe come from the ffmpeg-static npm packages; Edge TTS is pure Node)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg \
-    python3 \
-    python3-pip \
-    python3-venv \
     curl \
     git \
     && rm -rf /var/lib/apt/lists/*
-
-# Install Edge-TTS globally for voiceover narration
-RUN pip3 install --no-cache-dir --break-system-packages edge-tts
 
 WORKDIR /app
 
