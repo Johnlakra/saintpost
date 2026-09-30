@@ -129,6 +129,8 @@ Respond ONLY with valid JSON.
 Create a 30-60 second Instagram Reel / YouTube Shorts script for "${saint.name}".
 
 Language Instruction: The "voiceover" and "text_overlay" fields MUST be written in ${langLabel}. Visual descriptions MUST be in English for image generation models.
+Voiceover rules: each scene's voiceover is ONE or TWO short natural spoken sentences (12-22 words), written exactly as a warm storyteller would SAY it aloud. Write the saint's name and any foreign word in the target script (not Latin letters) so the text-to-speech voice pronounces it correctly. No emojis, no symbols, no hashtags in voiceover. Together all scenes must narrate the full story, the 3 lessons, and the "did you know" fact, and end with a short call to follow.
+Visual rules: each "visual" is a concrete painting-style scene (setting, action, lighting) of the saint; never include text, letters or logos in the image.
 
 Story Context (${langLabel}):
 ${storyData.full_story}
@@ -154,8 +156,12 @@ Respond ONLY with valid JSON array.
 `;
 
       const scriptResponseStr = await this.queryOpenRouter(scriptPrompt);
-      const cleanedScriptJson = scriptResponseStr.replace(/```json|```/g, '').trim();
-      const videoScript: SceneScript[] = JSON.parse(cleanedScriptJson);
+      const arr = scriptResponseStr.replace(/```json|```/g, '').match(/\[[\s\S]*\]/);
+      const videoScript: SceneScript[] = JSON.parse(arr ? arr[0] : '');
+      if (!Array.isArray(videoScript) || videoScript.length < 3 || videoScript.some(sc => !sc.visual || !sc.voiceover)) {
+        throw new Error('LLM returned an incomplete video script');
+      }
+      videoScript.forEach((sc, i) => { sc.scene_number = i + 1; });
 
       // Prompt 3: Caption & Hashtags in target language
       const captionPrompt = `

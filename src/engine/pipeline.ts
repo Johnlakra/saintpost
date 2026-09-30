@@ -3,7 +3,7 @@ import { LLMService, GeneratedContent } from '../services/llmService.js';
 import { VisualAssetService } from '../services/visualAssetService.js';
 import { VideoService } from '../services/videoService.js';
 import { TTSService } from '../services/ttsService.js';
-import { VideoAssemblyService } from '../services/videoAssemblyService.js';
+import { VideoAssemblyService, AssemblyScene } from '../services/videoAssemblyService.js';
 import { PublishingService } from '../services/publishingService.js';
 import { config } from '../config/env.js';
 import { db } from '../db/index.js';
@@ -77,31 +77,35 @@ export class SaintPostPipeline {
     );
     console.log(`✅ Step 4: Visual Images Generated (1 Cover + ${sceneAssets.length} Scenes)`);
 
-    // STEP 5: GENERATE VIDEO CLIPS
-    const clipPaths: string[] = [];
-    for (let i = 0; i < sceneAssets.length; i++) {
-      const scene = content.video_script[i];
-      const clipPath = await this.videoService.generateVideoClip(
-        sceneAssets[i].localPath,
-        scene.visual,
-        scene.duration || 5,
-        i + 1
-      );
-      clipPaths.push(clipPath);
-    }
-    console.log(`✅ Step 5: ${clipPaths.length} Video Clips Generated`);
+    // STEP 5: GENERATE PER-SCENE VOICEOVER (neural TTS). Video timing is driven by the audio.
+    const scenes = content.video_script;
+    const audios = await this.ttsService.generateSceneVoiceovers(
+      scenes.map(sc => sc.voiceover),
+      saint.name,
+      targetLang
+    );
+    console.log(`✅ Step 5: ${audios.length} scene voiceovers generated (${targetLang.toUpperCase()})`);
 
-    // STEP 6: GENERATE VOICEOVER & SUBTITLES IN TARGET LANGUAGE
-    const ttsResult = await this.ttsService.generateVoiceover(content.full_story, saint.name, targetLang);
-    console.log(`✅ Step 6: Voiceover Audio & Subtitles Generated (${targetLang.toUpperCase()})`);
+    // STEP 6: GENERATE VIDEO CLIPS, each exactly as long as its narration (+0.5s breathing room)
+    const assemblyScenes: AssemblyScene[] = [];
+    for (let i = 0; i < sceneAssets.length; i++) {
+      const durationSec = Math.max(3, audios[i].durationSec + 0.5);
+      const clipPath = await this.videoService.generateVideoClip(sceneAssets[i].localPath, durationSec, i + 1);
+      assemblyScenes.push({
+        clipPath,
+        audioPath: audios[i].audioPath,
+        durationSec,
+        narration: scenes[i].voiceover || '',
+        overlay: scenes[i].text_overlay || '',
+      });
+    }
+    console.log(`✅ Step 6: ${assemblyScenes.length} video clips generated`);
 
     // STEP 7: ASSEMBLE VIDEO (FFmpeg)
     const outputFileName = `saintpost_${saint.name.toLowerCase().replace(/[^a-z0-9]/g, '_')}_${targetLang}_${Date.now()}.mp4`;
     const finalVideoUrl = await this.assemblyService.assembleFinalVideo({
-      videoClips: clipPaths,
-      voiceoverAudioPath: ttsResult.audioPath,
-      subtitlesSrtPath: ttsResult.subtitlesPath,
-      outputFileName: outputFileName,
+      scenes: assemblyScenes,
+      outputFileName,
     });
     console.log(`✅ Step 7: Final 9:16 MP4 Video Rendered -> ${finalVideoUrl}`);
 
