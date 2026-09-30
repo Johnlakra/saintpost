@@ -93,13 +93,23 @@ export class SaintPostPipeline {
     const content = await this.llmService.generateSaintContentPackage(saint, targetLang);
     console.log(`✅ Step 2: LLM Content Generated (${content.video_script.length} scenes in ${targetLang.toUpperCase()})`);
 
+    // STEP 2b: fact-grounded detailed image prompts (saint dossier + the day's feast)
+    const brief = await this.llmService.buildVisualBrief(saint, content.video_script, {
+      dateLabel: `${saint.feast_month}/${saint.feast_day}`,
+      rank: saint.rank,
+      color: saint.liturgical_color,
+      martyrology: (saint as any).source_text || saint.short_description,
+    });
+    if (brief) content.video_script.forEach((sc, i) => { sc.image_prompt = brief.scenes[i]; });
+    console.log(`✅ Step 2b: Visual brief ${brief ? 'built for ' + brief.scenes.length + ' scenes' : 'skipped (using basic visuals)'}`);
+
     // STEP 3: GENERATE CHARACTER SHEET
     const charSheetResult = await this.visualService.generateCharacterSheet(saint);
     const characterSheetUrl = charSheetResult.url;
     console.log(`✅ Step 3: Saint Character Sheet Generated -> ${characterSheetUrl}`);
 
     // STEP 4: GENERATE SCENE IMAGES & COVER IMAGE
-    const coverResult = await this.visualService.generateCoverImage(saint, characterSheetUrl);
+    const coverResult = await this.visualService.generateCoverImage(saint, characterSheetUrl, brief?.cover);
     const coverImageUrl = coverResult.url;
     const sceneAssets = await this.visualService.generateSceneImages(
       saint,

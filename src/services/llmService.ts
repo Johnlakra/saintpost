@@ -3,6 +3,7 @@ import { config } from '../config/env.js';
 import { SaintRecord } from '../data/sanctusFetcher.js';
 
 export interface SceneScript {
+  image_prompt?: string; // detailed, fact-grounded prompt for the image model
   scene_number: number;
   duration: number; // in seconds (5-10)
   visual: string;
@@ -72,7 +73,7 @@ export class LLMService {
       const out = await this.completeJson(`You are a meticulous Catholic historian briefing an illustrator. Describe how "${saint.name}" actually looked, so the illustration is faithful to documented history.
 
 SOURCE (only trust this and widely documented photographs/portraits of this exact person):
-${(saint.facts || saint.short_description || '').slice(0, 3000)}
+${(saint.facts || saint.short_description || '').slice(0, 6000)}
 
 Rules:
 - State the apparent age the saint is best known at (for saints who died young, their real age), gender, typical complexion and hair, and everyday clothing correct for their REAL time and place.
@@ -87,6 +88,62 @@ Respond ONLY with JSON: {"appearance": "one sentence, max 40 words, starting wit
       console.warn('⚠️ Could not generate appearance profile:', e.message);
     }
     return '';
+  }
+
+
+
+  /**
+   * Builds rich, fact-grounded prompts for the image model from everything we know about the saint
+   * and the day's feast. Returns one prompt per scene plus one for the cover.
+   */
+  async buildVisualBrief(
+    saint: SaintRecord,
+    scenes: SceneScript[],
+    feast: { dateLabel: string; rank?: string; color?: string; martyrology?: string }
+  ): Promise<{ cover: string; scenes: string[] } | null> {
+    if (config.dryRun || !this.openrouterApiKey) return null;
+    try {
+      const out = await this.completeJson(`You are an art director writing prompts for an image generator (FLUX). Make each prompt richly detailed but strictly faithful to documented history.
+
+SAINT DOSSIER
+Name: ${saint.name}
+Feast: ${feast.dateLabel}${feast.rank ? `, ${feast.rank}` : ''}${feast.color ? `, liturgical colour ${feast.color}` : ''}
+Patronage: ${saint.patronage || 'n/a'}
+Era: ${saint.era || 'n/a'}   Region: ${saint.region || 'n/a'}
+Fixed appearance (copy verbatim whenever the saint appears): ${saint.appearance || 'n/a'}
+Roman Martyrology entry for the day: ${(feast.martyrology || '').slice(0, 1200) || 'n/a'}
+Documented biography:
+${(saint.facts || saint.short_description || '').slice(0, 7000)}
+
+SCENES (narration + rough visual):
+${JSON.stringify(scenes.map((sc, i) => ({ n: i + 1, narration: sc.voiceover, rough_visual: sc.visual })))}
+
+For each scene write ONE image prompt of 70-110 English words covering: who is in frame (saint with the fixed appearance, plus other people only if the biography mentions them), the exact action, the real place and its period-accurate architecture/landscape/objects/clothing, time of day and weather, light direction and colour palette, camera framing (vertical 9:16, shot type, lens, depth of field), and mood.
+Hard rules:
+- Depict only what the documented biography supports. No invented events, miracles, dialogue, relatives, symbols, halos, crosses, rosaries or religious garments unless documented.
+- Period accuracy: architecture, tools, vehicles, technology, fabrics and hairstyles must match the year and country of that moment.
+- No text, letters, captions, logos, signs with writing, or watermarks in the image.
+- The saint must look identical in every scene (same age, face, hair, clothing style) - if the scene is an illness or death scene keep the same young or old age as documented.
+Also write one "cover" prompt (square 1:1, head-and-shoulders portrait of the saint in a setting that reflects their life, calm and dignified) in the same style.
+
+Respond ONLY with JSON: {"cover": "...", "scenes": ["prompt for scene 1", "..."]} with exactly ${scenes.length} scene prompts.`, 0.3);
+      if (!out?.cover || !Array.isArray(out.scenes) || out.scenes.length !== scenes.length) throw new Error('unexpected shape');
+      return { cover: String(out.cover), scenes: out.scenes.map(String) };
+    } catch (e: any) {
+      console.warn('⚠️ Visual brief failed, using basic scene visuals:', e.message);
+      return null;
+    }
+  }
+
+  /** Belt and braces: never let follow/subscribe/@handle text reach the video, whatever the LLM wrote. */
+  static stripPromo(sc: SceneScript): void {
+    const promo = /@\w|https?:\/\/|www\.|\b(follow|subscribe|like and share|share this)\b|फॉलो|सब्सक्राइब|फ़ॉलो|ਫਾਲੋ|ਸਬਸਕ੍ਰਾਈਬ|ਫ਼ਾਲੋ/i;
+    if (promo.test(sc.text_overlay || '')) sc.text_overlay = '';
+    sc.voiceover = (sc.voiceover || '')
+      .split(/(?<=[.!?।])\s+/)
+      .filter(sentence => !promo.test(sentence))
+      .join(' ')
+      .trim();
   }
 
   /** Generic JSON completion used by maintenance scripts (db:enrich). */
@@ -180,7 +237,7 @@ Patronage: ${saint.patronage || 'Church'}
 Short Description: ${saint.short_description || ''}
 
 SOURCE FACTS (documented biography - the ONLY allowed basis for facts):
-${(saint.facts || saint.short_description || 'No source available - say only what is certain about this saint.').slice(0, 3500)}
+${(saint.facts || saint.short_description || 'No source available - say only what is certain about this saint.').slice(0, 7000)}
 
 FACT RULES: Use only facts stated in SOURCE FACTS. Do not invent events, quotes, miracles, places, dates, relationships or objects. If something is not in SOURCE FACTS, leave it out. Keep dates and places accurate.
 
@@ -201,10 +258,11 @@ Respond ONLY with valid JSON.
 Create a 30-60 second Instagram Reel / YouTube Shorts script for "${saint.name}".
 
 Language Instruction: The "voiceover" and "text_overlay" fields MUST be written in ${langLabel}. Visual descriptions MUST be in English for image generation models.
-Voiceover rules: each scene's voiceover is ONE or TWO short natural spoken sentences (12-22 words), written exactly as a warm storyteller would SAY it aloud. Write the saint's name and any foreign word in the target script (not Latin letters) so the text-to-speech voice pronounces it correctly. No emojis, no symbols, no hashtags in voiceover. Together all scenes must narrate the full story, the 3 lessons, and the "did you know" fact, and end with a short call to follow.
+text_overlay rules: a short title or key phrase only (max 6 words). NEVER put account names, @handles, URLs, hashtags, or follow/subscribe/like/share text in text_overlay or voiceover.
+Voiceover rules: each scene's voiceover is ONE or TWO short natural spoken sentences (12-22 words), written exactly as a warm storyteller would SAY it aloud. Write the saint's name and any foreign word in the target script (not Latin letters) so the text-to-speech voice pronounces it correctly. No emojis, no symbols, no hashtags in voiceover. Together all scenes must narrate the full story, the 3 lessons, and the "did you know" fact. The last scene ends with a short prayer or closing reflection about the saint - NEVER a call to follow, subscribe, like or share.
 Visual rules: each "visual" is a concrete scene (setting, action, lighting); never include text, letters or logos in the image.
 Script fidelity: every scene must depict only events/places stated in the Story Context and the SOURCE below; add no invented events, clothing, props or symbols (no halo, robe, cross or rosary unless documented). Use the real era's technology and settings.
-SOURCE: ${(saint.facts || '').slice(0, 2000)}
+SOURCE: ${(saint.facts || '').slice(0, 3500)}
 SAINT APPEARANCE (must stay identical in every scene, including illness/death scenes): ${saint.appearance || 'use accurate age, clothing and setting for this saint'}
 Whenever the saint appears in a "visual", describe them as exactly that person (same apparent age, gender, hair and clothing style). NEVER show the saint as an old man/woman unless the appearance above says so. If the saint died young, every scene, including sickness, hospital or death scenes, shows the young person. Keep historical setting and clothing accurate to the saint's real time and place.
 
@@ -238,6 +296,7 @@ Respond ONLY with valid JSON array.
         throw new Error('LLM returned an incomplete video script');
       }
       videoScript.forEach((sc, i) => { sc.scene_number = i + 1; });
+      videoScript.forEach(sc => LLMService.stripPromo(sc));
 
       // Prompt 3: Caption & Hashtags in target language
       const captionPrompt = `
@@ -330,8 +389,8 @@ Format output as JSON:
             scene_number: 5,
             duration: 5,
             visual: `Sacred heart lighting up with call to action`,
-            voiceover: `हे ${name}, हमारे लिए प्रार्थना कीजिए। रोज संत कथाओं के लिए सब्सक्राइब करें।`,
-            text_overlay: `फॉलो करें @SaintPost`,
+            voiceover: `हे ${name}, हमारे लिए प्रार्थना कीजिए।`,
+            text_overlay: ``,
           },
         ],
         caption: `🙏 संत ${name} का पर्व! उनकी शिक्षा: ${learnHi[0]} ✨ दैनिक संत कथाओं के लिए फॉलो करें!`,
@@ -384,8 +443,8 @@ Format output as JSON:
             scene_number: 5,
             duration: 5,
             visual: `Sacred heart lighting up with call to action`,
-            voiceover: `ਹੇ ${name}, ਸਾਡੇ ਲਈ ਪ੍ਰਾਰਥਨਾ ਕਰੋ। ਰੋਜ਼ਾਨਾ ਸੰਤ ਕਥਾਵਾਂ ਲਈ ਸਬਸਕ੍ਰਾਈਬ ਕਰੋ।`,
-            text_overlay: `ਫਾਲੋ ਕਰੋ @SaintPost`,
+            voiceover: `ਹੇ ${name}, ਸਾਡੇ ਲਈ ਪ੍ਰਾਰਥਨਾ ਕਰੋ।`,
+            text_overlay: ``,
           },
         ],
         caption: `🙏 ਸੰਤ ${name} ਦਾ ਪਰਵ! ਸਿੱਖਿਆ: ${learnPa[0]} ✨ ਰੋਜ਼ਾਨਾ ਸੰਤ ਕਥਾਵਾਂ ਲਈ ਫਾਲੋ ਕਰੋ!`,
@@ -439,8 +498,8 @@ Format output as JSON:
           scene_number: 5,
           duration: 5,
           visual: `Sacred heart lighting up with call to action`,
-          voiceover: `Pray for us, ${name}. Follow SaintPost for daily holy saint stories.`,
-          text_overlay: `Follow @SaintPost`,
+          voiceover: `Pray for us, ${name}.`,
+          text_overlay: ``,
         },
       ],
       caption: `🙏 Feast of ${name} (Month ${saint.feast_month}/${saint.feast_day})! Learn from their virtue: ${learn[0]} ✨ Follow for daily saint stories!`,

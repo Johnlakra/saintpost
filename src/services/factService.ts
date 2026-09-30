@@ -61,6 +61,19 @@ export class FactService {
     return saint;
   }
 
+  /** Whole article as plain text (early life, ministry, death, legacy...) for maximum documented detail. */
+  private async fullArticle(title: string): Promise<string> {
+    const res = await axios.get('https://en.wikipedia.org/w/api.php', {
+      headers: UA, timeout: 20000,
+      params: { action: 'query', format: 'json', prop: 'extracts', titles: title, explaintext: 1, redirects: 1 },
+    });
+    const page: any = Object.values(res.data?.query?.pages || {})[0];
+    let text: string = page?.extract || '';
+    const cut = text.search(/\n==\s*(See also|References|Notes|Sources|External links|Bibliography|Further reading)\s*==/i);
+    if (cut > 0) text = text.slice(0, cut);
+    return text.replace(/\n{3,}/g, '\n\n').slice(0, 12000);
+  }
+
   async lookup(name: string): Promise<SaintFacts | null> {
     const queries = [name, `${name} saint`];
     for (const q of queries) {
@@ -69,7 +82,7 @@ export class FactService {
         timeout: 15000,
         params: {
           action: 'query', format: 'json', generator: 'search', gsrsearch: q, gsrlimit: 3,
-          prop: 'extracts|pageimages|info', exintro: 1, explaintext: 1, exchars: 3500,
+          prop: 'extracts|pageimages|info', exintro: 1, explaintext: 1,
           piprop: 'thumbnail', pithumbsize: 768, pilicense: process.env.WIKI_ALLOW_NONFREE_IMAGES === 'true' ? 'any' : 'free', inprop: 'url', redirects: 1,
         },
       });
@@ -79,7 +92,8 @@ export class FactService {
         if (!p.extract || !titleMatches(name, p.title)) continue;
         const img: string | undefined = p.thumbnail?.source;
         const okImg = img && /\\.(jpe?g|png|webp)(\\?|$)/i.test(img) ? img : undefined; // skip SVG/maps/coats of arms
-        return { title: p.title, url: p.fullurl, extract: String(p.extract).trim(), imageUrl: okImg };
+        const full = await this.fullArticle(p.title).catch(() => '');
+        return { title: p.title, url: p.fullurl, extract: (full.length > String(p.extract).length ? full : String(p.extract)).trim(), imageUrl: okImg };
       }
     }
     return null;

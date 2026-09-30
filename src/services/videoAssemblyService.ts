@@ -99,7 +99,7 @@ export class VideoAssemblyService {
           ...args,
           '-filter_complex', fc.replace(/;$/, ''),
           '-map', chain, '-map', '1:a',
-          '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23', '-threads', '2', '-pix_fmt', 'yuv420p',
+          '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '19', '-threads', '2', '-pix_fmt', 'yuv420p',
           '-c:a', 'copy', '-shortest', '-movflags', '+faststart',
           finalPath,
         ]);
