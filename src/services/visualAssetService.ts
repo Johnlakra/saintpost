@@ -26,6 +26,10 @@ const STYLE =
   'classical Catholic devotional oil painting, reverent, warm golden candlelight, soft glowing halo, rich detail, painterly, dignified, ' +
   'beautiful composition, no text, no letters, no watermark, no logo, no modern objects, anatomically correct hands and face';
 
+const STYLE_MODERN =
+  'warm realistic digital illustration, soft golden light, gentle uplifting mood, natural youthful features, rich detail, ' +
+  'no text, no letters, no watermark, no logo, anatomically correct hands and face';
+
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '_');
 
 function isImage(buf: Buffer): boolean {
@@ -57,18 +61,28 @@ export class VisualAssetService {
    */
   private characterDescriptor(saint: SaintRecord): string {
     const symbols = Array.isArray(saint.symbols) && saint.symbols.length ? `, with symbols: ${saint.symbols.slice(0, 3).join(', ')}` : '';
-    return `${saint.name}, Catholic saint from ${saint.region || 'the Holy Land'}, ${saint.era || 'ancient'} era, wearing period-accurate humble clothing and a thin golden halo${symbols}`;
+    if (saint.appearance) {
+      return `${saint.appearance}; a subtle thin golden halo above the head${symbols}`;
+    }
+    const where = [saint.region, saint.era].filter(Boolean).join(', ');
+    return `${saint.name}${where ? ` (${where})` : ''}, period-accurate clothing for their real time and place, a subtle thin golden halo${symbols}`;
+  }
+
+  /** Modern saints get a realistic illustration style, ancient ones a classical painting. */
+  private styleFor(saint: SaintRecord): string {
+    const modern = /jeans|sneakers|polo|hoodie|t-shirt|modern|20th|21st|suit and tie/i.test(saint.appearance || '');
+    return modern ? STYLE_MODERN : STYLE;
   }
 
   async generateCharacterSheet(saint: SaintRecord): Promise<ImageAssetResult> {
     console.log(`🎨 Generating Character Sheet for Saint: ${saint.name}...`);
-    const prompt = `Character reference sheet, three panels side by side: front view, side profile, full body. ${this.characterDescriptor(saint)}. Plain light neutral background, ${STYLE}`;
+    const prompt = `Character reference sheet, three panels side by side: front view, side profile, full body. ${this.characterDescriptor(saint)}. Plain light neutral background, ${this.styleFor(saint)}`;
     return this.makeImage('character_sheet', saint, prompt, SHAPES.sheet, this.seedFor(saint));
   }
 
   async generateCoverImage(saint: SaintRecord, _characterSheetUrl?: string): Promise<ImageAssetResult> {
     console.log(`🖼️ Generating 1:1 Cover Image for ${saint.name}...`);
-    const prompt = `Square devotional portrait, head and shoulders, serene holy expression, centered with space around. ${this.characterDescriptor(saint)}. ${STYLE}`;
+    const prompt = `Square devotional portrait, head and shoulders, serene holy expression, centered with space around. ${this.characterDescriptor(saint)}. ${this.styleFor(saint)}`;
     return this.makeImage('cover', saint, prompt, SHAPES.square, this.seedFor(saint));
   }
 
@@ -80,7 +94,7 @@ export class VisualAssetService {
     for (let i = 0; i < scenes.length; i++) {
       const scene = scenes[i];
       console.log(`   └ Generating scene ${i + 1}/${scenes.length}...`);
-      const prompt = `${scene.visual}. Main figure: ${this.characterDescriptor(saint)}. Vertical cinematic composition, subject in the middle third. ${STYLE}`;
+      const prompt = `Main figure: ${this.characterDescriptor(saint)}. Scene: ${scene.visual}. The main figure must match that description exactly in every scene. Vertical cinematic composition, subject in the middle third. ${this.styleFor(saint)}`;
       try {
         results.push(await this.makeImage(`scene_${i + 1}`, saint, prompt, SHAPES.story, seed + i));
       } catch (err: any) {

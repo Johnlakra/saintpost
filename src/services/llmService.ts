@@ -60,6 +60,29 @@ export class LLMService {
     return [...new Set([...configured, ...dependable, ...free])].filter(m => !this.badModels.has(m)).slice(0, 8);
   }
 
+
+  /**
+   * One-time "casting sheet" for a saint: apparent age, gender, hair, period-correct clothing.
+   * Without this, text-to-image models default to an old bearded man for any saint.
+   */
+  async getAppearance(saint: SaintRecord): Promise<string> {
+    if (saint.appearance) return saint.appearance;
+    if (config.dryRun || !this.openrouterApiKey) return '';
+    try {
+      const out = await this.completeJson(`You are a Catholic art-direction assistant. Describe how to DRAW the saint "${saint.name}" so an image model renders the right person consistently.
+Known info: ${saint.short_description || ''} ${saint.era ? `Era: ${saint.era}.` : ''} ${saint.region ? `Region: ${saint.region}.` : ''}
+
+Use your own accurate knowledge of this saint's real life (birth/death years, age at death, country). Include: apparent age (the age they are best known at; for saints who died young, their real age at death), gender, complexion/ethnicity typical of their origin, hair, build, and clothing that is correct for their real time and place (a 20th/21st-century saint wears modern everyday clothes such as jeans, sneakers, a polo or hoodie; an ancient saint wears period garments). Do not default to an old bearded man. Do not invent facts you are not sure of.
+
+Respond ONLY with JSON: {"appearance": "one sentence, max 45 words, starting with the apparent age and gender, e.g. 'a 15-year-old Italian boy with short dark brown hair, slim build, wearing a red polo shirt, jeans and sneakers'"}`);
+      const text = String(out?.appearance || '').trim();
+      if (text.length > 15) return text;
+    } catch (e: any) {
+      console.warn('⚠️ Could not generate appearance profile:', e.message);
+    }
+    return '';
+  }
+
   /** Generic JSON completion used by maintenance scripts (db:enrich). */
   async completeJson(prompt: string): Promise<any> {
     const text = await this.queryOpenRouter(prompt);
@@ -145,8 +168,8 @@ IMPORTANT FOR HINDI: Use extremely simple, clear, everyday conversational Hindi 
 
 Saint: "${saint.name}"
 Feast Date: Month ${saint.feast_month}, Day ${saint.feast_day}
-Era: ${saint.era || 'Historical'}
-Region: ${saint.region || 'Holy Land'}
+Era: ${saint.era || 'unknown - use your own knowledge of this saint'}
+Region: ${saint.region || 'unknown - use your own knowledge of this saint'}
 Patronage: ${saint.patronage || 'Church'}
 Short Description: ${saint.short_description || ''}
 
@@ -168,7 +191,9 @@ Create a 30-60 second Instagram Reel / YouTube Shorts script for "${saint.name}"
 
 Language Instruction: The "voiceover" and "text_overlay" fields MUST be written in ${langLabel}. Visual descriptions MUST be in English for image generation models.
 Voiceover rules: each scene's voiceover is ONE or TWO short natural spoken sentences (12-22 words), written exactly as a warm storyteller would SAY it aloud. Write the saint's name and any foreign word in the target script (not Latin letters) so the text-to-speech voice pronounces it correctly. No emojis, no symbols, no hashtags in voiceover. Together all scenes must narrate the full story, the 3 lessons, and the "did you know" fact, and end with a short call to follow.
-Visual rules: each "visual" is a concrete painting-style scene (setting, action, lighting) of the saint; never include text, letters or logos in the image.
+Visual rules: each "visual" is a concrete scene (setting, action, lighting); never include text, letters or logos in the image.
+SAINT APPEARANCE (must stay identical in every scene, including illness/death scenes): ${saint.appearance || 'use accurate age, clothing and setting for this saint'}
+Whenever the saint appears in a "visual", describe them as exactly that person (same apparent age, gender, hair and clothing style). NEVER show the saint as an old man/woman unless the appearance above says so. If the saint died young, every scene, including sickness, hospital or death scenes, shows the young person. Keep historical setting and clothing accurate to the saint's real time and place.
 
 Story Context (${langLabel}):
 ${storyData.full_story}
