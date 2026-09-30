@@ -60,6 +60,15 @@ export class SaintPostPipeline {
   /**
    * Executes the complete 10-Step Automated Flow for a saint in Simple Hindi (Default), English, or Punjabi
    */
+  /** 'roman' (Hinglish/Pinglish) or 'native' subtitles for Hindi/Punjabi; admin-switchable from the bot menu. */
+  async subtitleMode(): Promise<'roman' | 'native'> {
+    try {
+      const r = await db.query(`SELECT value FROM settings WHERE key = 'subtitle_script'`);
+      if (r.rows[0]?.value === 'native' || r.rows[0]?.value === 'roman') return r.rows[0].value;
+    } catch { /* no table yet */ }
+    return config.subtitleScript;
+  }
+
   /** Publish an already-rendered post (used by the Telegram Publish button). */
   async publishPayload(payload: PostPayloadData) {
     const result = await this.publishingService.publishToAllActiveAccounts(payload);
@@ -124,6 +133,13 @@ export class SaintPostPipeline {
     console.log(`✅ Step 2: LLM Content Generated (${content.video_script.length} scenes in ${targetLang.toUpperCase()})`);
     progress('✍️ Script written. Designing detailed scenes...');
 
+    // STEP 2a: Hinglish / Pinglish subtitles for Hindi & Punjabi (voice stays native; only the on-screen text is romanized)
+    if (targetLang !== 'en' && (await this.subtitleMode()) === 'roman') {
+      const roman = await this.llmService.romanizeScenes(content.video_script, targetLang);
+      content.video_script.forEach((sc, i) => { sc.subtitle = roman[i]; });
+      console.log(`✅ Step 2a: ${targetLang === 'hi' ? 'Hinglish' : 'Pinglish'} subtitles ready`);
+    }
+
     // STEP 2b: fact-grounded detailed image prompts (saint dossier + the day's feast)
     const brief = await this.llmService.buildVisualBrief(saint, content.video_script, {
       dateLabel: `${saint.feast_month}/${saint.feast_day}`,
@@ -170,7 +186,7 @@ export class SaintPostPipeline {
         clipPath,
         audioPath: audios[i].audioPath,
         durationSec,
-        narration: scenes[i].voiceover || '',
+        narration: scenes[i].subtitle || scenes[i].voiceover || '',
         overlay: scenes[i].text_overlay || '',
       });
     }

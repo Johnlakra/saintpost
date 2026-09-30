@@ -51,6 +51,8 @@ export const config = {
   enableVideoGeneration: process.env.ENABLE_VIDEO_GENERATION !== 'false',
   enableVoiceover: process.env.ENABLE_VOICEOVER !== 'false',
   enableMusic: process.env.ENABLE_MUSIC !== 'false',
+  // Hindi/Punjabi subtitle script: 'roman' = Hinglish/Pinglish (Latin letters), 'native' = Devanagari/Gurmukhi
+  subtitleScript: (process.env.SUBTITLE_SCRIPT === 'native' ? 'native' : 'roman') as 'roman' | 'native',
   enableSubtitles: process.env.ENABLE_SUBTITLES !== 'false',
   // The 3-panel character sheet is not used by the video; skipping it saves one image call per video.
   generateCharacterSheet: process.env.GENERATE_CHARACTER_SHEET === 'true',

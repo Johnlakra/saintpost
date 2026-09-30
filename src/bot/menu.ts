@@ -186,10 +186,22 @@ export function registerMenu(bot: Telegraf<Context>, auth: (ctx: Context, next: 
 
   bot.action('m:lang', auth, async ctx => {
     await ctx.answerCbQuery();
-    await ctx.editMessageText('🌐 Choose the language for narration, subtitles and captions:', Markup.inlineKeyboard([
+    const mode = await pipeline.subtitleMode();
+    await ctx.editMessageText('🌐 Choose the language for narration, subtitles and captions.\n\nFor Hindi/Punjabi you can show subtitles in English letters (Hinglish/Pinglish) or in the native script.', Markup.inlineKeyboard([
       (['hi', 'pa', 'en'] as Lang[]).map(l => Markup.button.callback(LANG_LABEL[l], `setlang:${l}`)),
+      [Markup.button.callback(mode === 'roman' ? '🔤 Subtitles: Hinglish / Pinglish ✅' : '🔤 Subtitles: Hindi / Punjabi script ✅', 'subs:toggle')],
       backRow,
     ]));
+  });
+  bot.action('subs:toggle', auth, async ctx => {
+    const next = (await pipeline.subtitleMode()) === 'roman' ? 'native' : 'roman';
+    await db.query(`INSERT INTO settings (key, value) VALUES ('subtitle_script', $1) ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()`, [next]).catch(() => {});
+    await ctx.answerCbQuery(next === 'roman' ? 'Subtitles: Hinglish / Pinglish' : 'Subtitles: native script');
+    await ctx.editMessageText('🌐 Language & subtitles:', Markup.inlineKeyboard([
+      (['hi', 'pa', 'en'] as Lang[]).map(l => Markup.button.callback(LANG_LABEL[l], `setlang:${l}`)),
+      [Markup.button.callback(next === 'roman' ? '🔤 Subtitles: Hinglish / Pinglish ✅' : '🔤 Subtitles: Hindi / Punjabi script ✅', 'subs:toggle')],
+      backRow,
+    ])).catch(() => {});
   });
   bot.action(/^setlang:(hi|pa|en)$/, auth, async ctx => {
     const lang = ctx.match[1] as Lang;
