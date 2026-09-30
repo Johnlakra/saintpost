@@ -4,6 +4,7 @@ import { fileURLToPath } from 'url';
 import axios from 'axios';
 import { config } from '../config/env.js';
 import { ffmpeg, FONTS_DIR } from '../utils/media.js';
+import { watermarkService, WM_STYLE_LINE, WatermarkConfig } from './watermarkService.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -17,7 +18,6 @@ export interface AssemblyScene {
 
 export interface VideoAssemblyOptions {
   scenes: AssemblyScene[];
-  logoUrl?: string;
   brandColor?: string;
   outputFileName: string;
 }
@@ -72,26 +72,34 @@ export class VideoAssemblyService {
       // 3. Subtitles/title (ASS) + optional logo.
       const assPath = tmp('subs.ass');
       temps.push(assPath);
-      fs.writeFileSync(assPath, this.buildAss(opts.scenes, opts.brandColor));
+      const wm = await watermarkService.get();
+      const totalSec = opts.scenes.reduce((a, sc) => a + sc.durationSec, 0);
+      const writeAss = (withSubs: boolean) => fs.writeFileSync(assPath, this.buildAss(opts.scenes, opts.brandColor, withSubs, wm, totalSec));
 
+      // Watermark logo (global, editable from the Telegram menu)
       let logoPath: string | null = null;
-      if (opts.logoUrl) {
-        logoPath = await this.downloadLogo(opts.logoUrl, tmp('logo.png'));
-        if (logoPath) temps.push(logoPath);
+      let logoBox: { w: number; x: number; y: number } | null = null;
+      if (wm.enabled && wm.logoUrl) {
+        logoPath = await watermarkService.fetchLogo(wm.logoUrl, tmp('logo.img'));
+        if (logoPath) {
+          temps.push(logoPath);
+          try { logoBox = await watermarkService.logoBox(wm, logoPath); } catch { logoPath = null; }
+        }
       }
 
       const esc = (p: string) => p.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "\\'");
-      const render = async (withSubs: boolean) => {
+      const render = async (useAss: boolean, withSubs: boolean) => {
         const args = ['-f', 'concat', '-safe', '0', '-i', listPath, '-i', audioPath];
         if (logoPath) args.push('-i', logoPath);
         let chain = '[0:v]';
         let fc = '';
-        if (withSubs) {
+        if (useAss) {
+          writeAss(withSubs);
           fc += `${chain}ass='${esc(assPath)}':fontsdir='${esc(FONTS_DIR)}'[vs];`;
           chain = '[vs]';
         }
-        if (logoPath) {
-          fc += `[2:v]scale=150:-1,format=rgba,colorchannelmixer=aa=0.35[lg];${chain}[lg]overlay=W-w-40:40[vl];`;
+        if (logoPath && logoBox) {
+          fc += `[2:v]scale=${logoBox.w}:-1,format=rgba,colorchannelmixer=aa=${wm.logo.opacity / 100}[lg];${chain}[lg]overlay=${logoBox.x}:${logoBox.y}[vl];`;
           chain = '[vl]';
         }
         if (!fc) { fc = `${chain}null[vl];`; chain = '[vl]'; }
@@ -99,18 +107,23 @@ export class VideoAssemblyService {
           ...args,
           '-filter_complex', fc.replace(/;$/, ''),
           '-map', chain, '-map', '1:a',
-          '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23', '-threads', '2', '-pix_fmt', 'yuv420p',
+          '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '19', '-threads', '2', '-pix_fmt', 'yuv420p',
           '-c:a', 'copy', '-shortest', '-movflags', '+faststart',
           finalPath,
         ]);
       };
 
+      // Try: title + subtitles + watermark -> watermark/title only -> no text layer at all
       try {
-        await render(config.enableSubtitles);
+        await render(true, config.enableSubtitles);
       } catch (e: any) {
-        if (!config.enableSubtitles) throw e;
-        console.warn('⚠️ Render with subtitles failed, retrying without them:', e.message);
-        await render(false);
+        console.warn('⚠️ Render with subtitles failed, retrying without subtitles:', e.message);
+        try {
+          await render(true, false);
+        } catch (e2: any) {
+          console.warn('⚠️ Text layer failed entirely, rendering plain:', e2.message);
+          await render(false, false);
+        }
       }
 
       console.log(`✅ Final 9:16 MP4 rendered: ${finalPath}`);
@@ -124,7 +137,7 @@ export class VideoAssemblyService {
     }
   }
 
-  private buildAss(scenes: AssemblyScene[], brandColor?: string): string {
+  private buildAss(scenes: AssemblyScene[], brandColor: string | undefined, withSubs: boolean, wm: WatermarkConfig, totalSec: number): string {
     const head = `[Script Info]
 ScriptType: v4.00+
 PlayResX: 1080
@@ -136,6 +149,7 @@ ScaledBorderAndShadow: yes
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Sub,Noto Sans Devanagari,58,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,5,2,2,70,70,300,1
 Style: Title,Noto Sans Devanagari,68,${assColor(brandColor)},&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,6,2,8,70,70,220,1
+${WM_STYLE_LINE}
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -147,7 +161,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
       if (s.overlay?.trim()) {
         lines.push(`Dialogue: 1,${assTime(start + 0.2)},${assTime(end - 0.1)},Title,,0,0,0,,{\\fad(300,300)}${assEscape(this.wrap(s.overlay.trim(), 18))}`);
       }
-      const words = (s.narration || '').replace(/\s+/g, ' ').trim().split(' ').filter(Boolean);
+      const words = (withSubs ? (s.narration || '') : '').replace(/\s+/g, ' ').trim().split(' ').filter(Boolean);
       if (words.length) {
         const chunks: string[] = [];
         for (let i = 0; i < words.length; i += 5) chunks.push(words.slice(i, i + 5).join(' '));
@@ -162,6 +176,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
       }
       t = end;
     }
+    const wmLine = watermarkService.assEvent(wm, totalSec, assTime);
+    if (wmLine) lines.push(wmLine);
     return head + lines.join('\n') + '\n';
   }
 
@@ -174,16 +190,5 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     }
     if (line) out.push(line);
     return out.join('\n');
-  }
-
-  private async downloadLogo(url: string, dest: string): Promise<string | null> {
-    try {
-      const res = await axios.get(url, { responseType: 'arraybuffer', timeout: 20000 });
-      fs.writeFileSync(dest, Buffer.from(res.data));
-      return dest;
-    } catch (e: any) {
-      console.warn('⚠️ Logo download failed, rendering without logo:', e.message);
-      return null;
-    }
   }
 }

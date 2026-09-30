@@ -1,11 +1,10 @@
 import axios from 'axios';
 import { Telegraf, Context } from 'telegraf';
 import { config } from '../config/env.js';
-import { SaintPostPipeline } from '../engine/pipeline.js';
 import { SaintFetcherService } from '../data/sanctusFetcher.js';
 import { db } from '../db/index.js';
+import { showMainMenu, runAndPresent, getLang, clearPending, registerMenu } from './menu.js';
 
-const pipeline = new SaintPostPipeline();
 const fetcher = new SaintFetcherService();
 const processedUpdateIds = new Set<number>();
 
@@ -44,24 +43,16 @@ export function adminAuthMiddleware(ctx: Context, next: () => Promise<void>) {
 export function registerBotCommands(bot: Telegraf<Context>) {
   // 1. /start
   bot.command('start', adminAuthMiddleware, async (ctx) => {
-    ctx.replyWithMarkdownV2(
-      `*🙏 Welcome to SaintPost Bot\\!*\n\n` +
-      `Automation Bot for Catholic Feast Day Content on Instagram Reels & YouTube Shorts\\.\n\n` +
-      `*Quick Commands:*\n` +
-      `• \`/today\` \\- Preview today's feast day post\n` +
-      `• \`/saint [name]\` \\- Generate on\\-demand post for any saint\n` +
-      `• \`/accounts\` \\- View connected social accounts\n` +
-      `• \`/logo [account] [url]\` \\- Change logo overlay per account\n` +
-      `• \`/status\` \\- System health & DB stats\n` +
-      `• \`/help\` \\- Detailed command reference`
-    );
+    await ctx.reply('🙏 Welcome to SaintPost — Catholic saint & feast-day videos for Instagram Reels and YouTube Shorts.\nTap a button below (you can reopen this anytime with /menu).');
+    await showMainMenu(ctx);
   });
 
   // 2. /help
   bot.command('help', adminAuthMiddleware, async (ctx) => {
     ctx.reply(
       `📌 SAINTPOST COMMAND GUIDE\n\n` +
-      `/start - Welcome setup wizard\n` +
+      `/menu - Button menu (easiest way to use the bot)\n` +
+      `/start - Welcome + menu\n` +
       `/today - Preview & generate today's feast post\n` +
       `/saint <name> - On-demand post generation (e.g. /saint St. Francis)\n` +
       `/post <saint> <account> - Publish specific saint to single account\n` +
@@ -77,75 +68,23 @@ export function registerBotCommands(bot: Telegraf<Context>) {
 
   // 3. /today [optional: hi|pa|en]
   bot.command('today', adminAuthMiddleware, async (ctx) => {
-    const text = ctx.message.text.trim();
-    const parts = text.split(' ').slice(1);
-    let lang: 'hi' | 'en' | 'pa' = 'hi';
-
-    if (parts[0] && ['hi', 'en', 'pa'].includes(parts[0].toLowerCase())) {
-      lang = parts[0].toLowerCase() as 'hi' | 'en' | 'pa';
-    }
-
-    const langNames: Record<string, string> = { hi: 'हिंदी (Simple Hindi)', pa: 'ਪੰਜਾਬੀ (Punjabi)', en: 'English' };
-
-    ctx.reply(`🔍 Fetching today's feast day in ${langNames[lang]}...`);
-    try {
-      const saint = await fetcher.getSaintForDate(new Date());
-      ctx.reply(
-        `✝️ TODAY'S FEAST: ${saint.name}\n` +
-        `🌐 Language: ${langNames[lang]}\n` +
-        `📅 Date: Month ${saint.feast_month}/${saint.feast_day}\n\n` +
-        `Generating 9:16 video preview package... Please wait ~2-3 minutes.`
-      );
-
-      const result = await pipeline.runPipelineForSaint(saint, lang);
-      
-      ctx.reply(
-        `✅ PREVIEW READY FOR ${result.saint.name} [${lang.toUpperCase()}]\n\n` +
-        `🎬 Rendered Video: ${result.finalVideoUrl}\n` +
-        `🖼️ Cover Image: ${result.coverImageUrl}\n\n` +
-        `📝 Caption:\n${result.content.caption}\n\n` +
-        `🏷️ Hashtags:\n${result.content.hashtags.substring(0, 150)}...`
-      );
-    } catch (err: any) {
-      ctx.reply(`❌ Failed to generate today's post: ${err.message}`);
-    }
+    const arg = ctx.message.text.trim().split(/\s+/)[1]?.toLowerCase();
+    const lang = (['hi', 'pa', 'en'].includes(arg || '') ? arg : await getLang(String(ctx.from?.id))) as 'hi' | 'pa' | 'en';
+    const saint = await fetcher.getSaintForDate(new Date());
+    await runAndPresent(ctx, saint, lang);
   });
 
   // 4. /saint <name> [optional: hi|pa|en]
   bot.command('saint', adminAuthMiddleware, async (ctx) => {
-    const text = ctx.message.text.trim();
-    const parts = text.split(' ').slice(1);
+    const parts = ctx.message.text.trim().split(/\s+/).slice(1);
     if (parts.length === 0) {
-      ctx.reply('⚠️ Usage: /saint <Saint Name> [optional language: hi|pa|en]\nExamples:\n• /saint St. Francis (Defaults to Simple Hindi)\n• /saint St. Francis pa (Punjabi)\n• /saint St. Francis en (English)');
+      await ctx.reply('⚠️ Usage: /saint <Saint Name> [hi|pa|en]\nExample: /saint Carlo Acutis pa\nOr just use /menu → 🔎 Pick a Saint.');
       return;
     }
-
-    let lang: 'hi' | 'en' | 'pa' = 'hi';
-    const lastPart = parts[parts.length - 1].toLowerCase();
-    
-    let saintName = parts.join(' ');
-    if (['hi', 'en', 'pa'].includes(lastPart)) {
-      lang = lastPart as 'hi' | 'en' | 'pa';
-      saintName = parts.slice(0, parts.length - 1).join(' ');
-    }
-
-    const langNames: Record<string, string> = { hi: 'हिंदी (Simple Hindi)', pa: 'ਪੰਜਾਬੀ (Punjabi)', en: 'English' };
-
-    ctx.reply(`🚀 Initializing video pipeline for "${saintName}" in ${langNames[lang]}...`);
-    try {
-      const result = await pipeline.runPipelineForSaint(saintName, lang);
-
-      ctx.reply(
-        `🎉 CONTENT GENERATED FOR ${result.saint.name} [${lang.toUpperCase()}]!\n\n` +
-        `🎬 Final MP4 Video: ${result.finalVideoUrl}\n` +
-        `🎨 Character Sheet: ${result.characterSheetUrl}\n` +
-        `🧑 Face reference: ${result.referenceImageUrl || 'none found (use /refimage to set a documented photo)'}\n` +
-        `🖼️ Feed Cover: ${result.coverImageUrl}\n\n` +
-        `📲 Published to ${result.publishResult.successCount} active accounts.`
-      );
-    } catch (err: any) {
-      ctx.reply(`❌ On-demand generation error: ${err.message}`);
-    }
+    let lang = await getLang(String(ctx.from?.id));
+    const last = parts[parts.length - 1].toLowerCase();
+    if (['hi', 'pa', 'en'].includes(last)) { lang = last as 'hi' | 'pa' | 'en'; parts.pop(); }
+    await runAndPresent(ctx, parts.join(' '), lang);
   });
 
   // 5. /accounts
@@ -250,6 +189,10 @@ export function registerBotCommands(bot: Telegraf<Context>) {
 
   // 9. /cancel
   bot.command('cancel', adminAuthMiddleware, async (ctx) => {
-    ctx.reply('🛑 Current bot operation cancelled.');
+    clearPending(String(ctx.from?.id));
+    ctx.reply('🛑 Cancelled. Send /menu to start again.');
   });
+
+  // Button menu, callbacks and free-text answers (registered last so commands win)
+  registerMenu(bot, adminAuthMiddleware);
 }

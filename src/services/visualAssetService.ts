@@ -18,16 +18,16 @@ type Shape = { w: number; h: number; genW: number; genH: number; aspect: '1:1' |
 // Generate at a model-friendly size (multiples of 16), then scale/crop to the exact delivery size.
 const SHAPES: Record<'square' | 'story' | 'sheet', Shape> = {
   square: { w: 1080, h: 1080, genW: 1024, genH: 1024, aspect: '1:1' },
-  story: { w: 1080, h: 1920, genW: 768, genH: 1344, aspect: '9:16' },
+  story: { w: 1080, h: 1920, genW: 1024, genH: 1792, aspect: '9:16' },
   sheet: { w: 1280, h: 720, genW: 1280, genH: 720, aspect: '16:9' },
 };
 
 const STYLE =
-  'classical devotional oil painting, reverent, warm natural light, rich detail, painterly, dignified, ' +
+  'classical devotional oil painting, reverent, warm natural light, sharp focus, intricate fine detail, high resolution, painterly, dignified, ' +
   'beautiful composition, no text, no letters, no watermark, no logo, anatomically correct hands and face';
 
 const STYLE_MODERN =
-  'warm realistic digital illustration, soft golden light, gentle uplifting mood, natural youthful features, rich detail, ' +
+  'warm realistic illustration, soft golden light, gentle uplifting mood, natural features, sharp focus, intricate fine detail, high resolution, ' +
   'no text, no letters, no watermark, no logo, anatomically correct hands and face';
 
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '_');
@@ -78,9 +78,11 @@ export class VisualAssetService {
     return this.makeImage('character_sheet', saint, prompt, SHAPES.sheet, this.seedFor(saint));
   }
 
-  async generateCoverImage(saint: SaintRecord, _characterSheetUrl?: string): Promise<ImageAssetResult> {
+  async generateCoverImage(saint: SaintRecord, _characterSheetUrl?: string, detailedPrompt?: string): Promise<ImageAssetResult> {
     console.log(`🖼️ Generating 1:1 Cover Image for ${saint.name}...`);
-    const prompt = `Square devotional portrait, head and shoulders, serene holy expression, centered with space around. ${this.characterDescriptor(saint)}. ${this.styleFor(saint)}`;
+    const prompt = detailedPrompt
+      ? `${this.characterDescriptor(saint)}. ${detailedPrompt}. ${this.styleFor(saint)}`
+      : `Square devotional portrait, head and shoulders, calm dignified expression, centered with space around. ${this.characterDescriptor(saint)}. ${this.styleFor(saint)}`;
     return this.makeImage('cover', saint, prompt, SHAPES.square, this.seedFor(saint));
   }
 
@@ -92,7 +94,7 @@ export class VisualAssetService {
     for (let i = 0; i < scenes.length; i++) {
       const scene = scenes[i];
       console.log(`   └ Generating scene ${i + 1}/${scenes.length}...`);
-      const prompt = `Main figure: ${this.characterDescriptor(saint)}. Scene: ${scene.visual}. The main figure must match that description exactly in every scene. Vertical cinematic composition, subject in the middle third. ${this.styleFor(saint)}`;
+      const prompt = `Main figure: ${this.characterDescriptor(saint)}. Scene: ${scene.image_prompt || scene.visual}. The main figure must match that description exactly in every scene. Vertical cinematic composition, subject in the middle third. ${this.styleFor(saint)}`;
       try {
         results.push(await this.makeImage(`scene_${i + 1}`, saint, prompt, SHAPES.story, seed + i));
       } catch (err: any) {
@@ -202,8 +204,8 @@ export class VisualAssetService {
 
   private async fal(prompt: string, shape: Shape, seed: number): Promise<Buffer> {
     const res = await axios.post(
-      'https://fal.run/fal-ai/flux/schnell',
-      { prompt, image_size: { width: shape.genW, height: shape.genH }, num_inference_steps: 4, seed, enable_safety_checker: true },
+      `https://fal.run/${process.env.FAL_IMAGE_MODEL || 'fal-ai/flux/schnell'}`,
+      { prompt, image_size: { width: shape.genW, height: shape.genH }, num_inference_steps: process.env.FAL_IMAGE_MODEL ? 28 : 4, seed, enable_safety_checker: true },
       { headers: { Authorization: `Key ${config.falApiKey}` }, timeout: 90000 }
     );
     const url = res.data?.images?.[0]?.url;
@@ -212,10 +214,17 @@ export class VisualAssetService {
   }
 
   /** HuggingFace Inference Providers (OpenAI-style images API). The old hf-inference FLUX endpoint returns 410 Gone. */
+  /** Some providers reject or choke on >~1.3k px sides: shrink (keeping aspect, multiples of 16) for them. */
+  private capped(shape: Shape, max = 1344): { w: number; h: number } {
+    const k = Math.min(1, max / Math.max(shape.genW, shape.genH));
+    const r = (n: number) => Math.max(256, Math.round((n * k) / 16) * 16);
+    return { w: r(shape.genW), h: r(shape.genH) };
+  }
+
   private async hfRouter(provider: 'nscale' | 'together', prompt: string, shape: Shape, seed: number): Promise<Buffer> {
     const res = await axios.post(
       `https://router.huggingface.co/${provider}/v1/images/generations`,
-      { model: 'black-forest-labs/FLUX.1-schnell', prompt, response_format: 'b64_json', width: shape.genW, height: shape.genH, size: `${shape.genW}x${shape.genH}`, seed, steps: 4, n: 1 },
+      { model: 'black-forest-labs/FLUX.1-schnell', prompt, response_format: 'b64_json', width: this.capped(shape).w, height: this.capped(shape).h, size: `${this.capped(shape).w}x${this.capped(shape).h}`, seed, steps: 4, n: 1 },
       { headers: { Authorization: `Bearer ${config.huggingfaceApiKey}` }, timeout: 120000 }
     );
     const item = res.data?.data?.[0];
@@ -272,7 +281,7 @@ export class VisualAssetService {
 
   private async pollinations(prompt: string, shape: Shape, seed: number, model: string, refUrl?: string): Promise<Buffer> {
     const p = encodeURIComponent(prompt.replace(/\s+/g, ' ').trim().slice(0, 900));
-    const url = `https://image.pollinations.ai/prompt/${p}?width=${shape.genW}&height=${shape.genH}&seed=${seed}&model=${model}&nologo=true&enhance=false&safe=true${refUrl ? `&image=${encodeURIComponent(refUrl)}` : ''}`;
+    const url = `https://image.pollinations.ai/prompt/${p}?width=${this.capped(shape).w}&height=${this.capped(shape).h}&seed=${seed}&model=${model}&nologo=true&enhance=false&safe=true${refUrl ? `&image=${encodeURIComponent(refUrl)}` : ''}`;
     const res = await axios.get(url, { responseType: 'arraybuffer', timeout: 120000, headers: { 'User-Agent': 'SaintPost/1.0', ...(config.pollinationsApiKey ? { Authorization: `Bearer ${config.pollinationsApiKey}` } : {}) } });
     return Buffer.from(res.data);
   }

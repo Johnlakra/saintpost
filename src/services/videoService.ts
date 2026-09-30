@@ -50,7 +50,7 @@ export class VideoService {
       '-i', imagePath,
       '-vf', vf,
       '-frames:v', String(frames),
-      '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23', '-threads', '1',
+      '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '17', '-threads', '1',
       '-r', String(FPS), '-pix_fmt', 'yuv420p',
       outputPath,
     ]);
