@@ -71,27 +71,32 @@ export class VideoAssemblyService {
         }
       }
 
-      let cmd = `ffmpeg -y ${inputs.join(' ')} `;
+      let cmd = `ffmpeg -y -threads 2 ${inputs.join(' ')} `;
       if (filterComplex) {
         cmd += `-filter_complex "${filterComplex.trim().replace(/;$/, '')}" -map "${currentVideoMap}" `;
       } else {
         cmd += `-map 0:v `;
       }
 
-      // Audio mapping
+      // Low-RAM Audio & Video encoding flags
       if (options.voiceoverAudioPath && fs.existsSync(options.voiceoverAudioPath)) {
-        cmd += `-map 1:a -c:a aac -b:a 192k `;
+        cmd += `-map 1:a -c:a aac -b:a 128k `;
       } else {
         cmd += `-an `;
       }
 
-      cmd += `-c:v libx264 -preset fast -crf 22 -pix_fmt yuv420p "${finalOutputPath}"`;
+      cmd += `-c:v libx264 -preset ultrafast -tune zerolatency -crf 24 -threads 2 -pix_fmt yuv420p "${finalOutputPath}"`;
 
-      console.log(`Executing FFmpeg Assembly command...`);
+      console.log(`Executing FFmpeg Memory-Optimized Assembly command...`);
       await execAsync(cmd);
 
-      // Cleanup temp concat list
+      // Cleanup temp concat list and intermediate scene clip files to free disk and RAM
       if (fs.existsSync(concatListPath)) fs.unlinkSync(concatListPath);
+      options.videoClips.forEach(clipPath => {
+        if (fs.existsSync(clipPath) && !clipPath.includes('assets/')) {
+          try { fs.unlinkSync(clipPath); } catch (e) {}
+        }
+      });
 
       console.log(`✅ Final 9:16 MP4 successfully rendered: ${finalOutputPath}`);
       return `${config.renderExternalUrl}/renders/${options.outputFileName}`;

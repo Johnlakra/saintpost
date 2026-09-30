@@ -80,25 +80,25 @@ export class VideoService {
   }
 
   /**
-   * FFmpeg Ken Burns Effect: Turns static 9:16 image into smooth cinematic moving video clip
+   * FFmpeg Ken Burns Effect: Low-Memory 512MB Render Free Tier Optimized
    */
   private async generateKenBurnsClip(
     imagePath: string,
     outputPath: string,
     durationSec: number
   ): Promise<string> {
-    console.log(`   └ Applying FFmpeg Ken Burns motion effect on ${path.basename(imagePath)}...`);
+    console.log(`   └ Applying low-RAM FFmpeg Ken Burns motion effect on ${path.basename(imagePath)}...`);
     try {
-      const totalFrames = durationSec * 30;
-      // Smooth slow zoom in from 1.0 to 1.15
-      const vfFilter = `scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,zoompan=z='min(zoom+0.0015,1.15)':d=${totalFrames}:s=1080x1920:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
+      const totalFrames = durationSec * 25; // 25 fps to save RAM
+      // Smooth slow zoom in from 1.0 to 1.12 with capped 720x1280 canvas to fit 512MB RAM
+      const vfFilter = `scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,zoompan=z='min(zoom+0.0012,1.12)':d=${totalFrames}:s=720x1280:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
 
-      const cmd = `ffmpeg -y -loop 1 -i "${imagePath}" -vf "${vfFilter}" -c:v libx264 -t ${durationSec} -pix_fmt yuv420p -r 30 "${outputPath}"`;
+      const cmd = `ffmpeg -y -threads 1 -loop 1 -i "${imagePath}" -vf "${vfFilter}" -c:v libx264 -preset ultrafast -tune zerolatency -t ${durationSec} -pix_fmt yuv420p -r 25 "${outputPath}"`;
       await execAsync(cmd);
       return outputPath;
     } catch (e: any) {
       console.warn('⚠️ FFmpeg Ken Burns fallback warning:', e.message);
-      // Create empty video if ffmpeg errors out
+      // Create lightweight placeholder clip if ffmpeg errors out
       fs.writeFileSync(outputPath, Buffer.alloc(1024));
       return outputPath;
     }

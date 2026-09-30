@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  saintpost:
+    build: .
+    container_name: saintpost_app
+    restart: always
+    ports:
+      - "10000:10000"
+    env_file:
+      - .env
+    volumes:
+      - ./public:/app/public
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
