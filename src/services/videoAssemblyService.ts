@@ -138,6 +138,9 @@ export class VideoAssemblyService {
   }
 
   private buildAss(scenes: AssemblyScene[], brandColor: string | undefined, withSubs: boolean, wm: WatermarkConfig, totalSec: number): string {
+    const latin = scenes.reduce((n, sc) => n + (sc.narration.match(/[A-Za-z]/g)?.length || 0), 0) >
+      scenes.reduce((n, sc) => n + (sc.narration.match(/[^\x00-\x7F]/g)?.length || 0), 0);
+    const subFont = latin ? 'Noto Sans' : 'Noto Sans Devanagari';
     const head = `[Script Info]
 ScriptType: v4.00+
 PlayResX: 1080
@@ -147,7 +150,7 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Sub,Noto Sans Devanagari,58,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,5,2,2,70,70,300,1
+Style: Sub,${subFont},58,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,5,2,2,70,70,300,1
 Style: Title,Noto Sans Devanagari,68,${assColor(brandColor)},&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,6,2,8,70,70,220,1
 ${WM_STYLE_LINE}
 

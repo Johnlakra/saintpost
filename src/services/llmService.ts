@@ -1,8 +1,10 @@
 import axios from 'axios';
 import { config } from '../config/env.js';
 import { SaintRecord } from '../data/sanctusFetcher.js';
+import { romanizeFallback } from '../utils/romanize.js';
 
 export interface SceneScript {
+  subtitle?: string; // Roman-script (Hinglish/Pinglish) version of the voiceover for on-screen subtitles
   image_prompt?: string; // detailed, fact-grounded prompt for the image model
   scene_number: number;
   duration: number; // in seconds (5-10)
@@ -132,6 +134,35 @@ Respond ONLY with JSON: {"cover": "...", "scenes": ["prompt for scene 1", "..."]
     } catch (e: any) {
       console.warn('⚠️ Visual brief failed, using basic scene visuals:', e.message);
       return null;
+    }
+  }
+
+
+  /**
+   * Hinglish / Pinglish subtitles: the SAME words as the Hindi / Punjabi narration, typed in English letters
+   * the way people write them on phones. Falls back to rule-based transliteration if the LLM is unavailable.
+   */
+  async romanizeScenes(scenes: SceneScript[], lang: 'hi' | 'pa'): Promise<string[]> {
+    const name = lang === 'hi' ? 'Hinglish (Hindi written in English letters)' : 'Pinglish (Punjabi written in English letters)';
+    try {
+      if (config.dryRun || !this.openrouterApiKey) throw new Error('LLM disabled');
+      const out = await this.completeJson(`Transliterate each line into natural ${name}, exactly as a young Indian would type it on WhatsApp.
+
+Rules:
+- Keep EVERY word and the exact meaning. Do NOT translate into English and do not add or drop words.
+- Use simple, common Roman spellings (e.g. "hai", "ka", "ki", "nahi", "prarthna", "jeevan", "seva", "ਕੀਤਾ" -> "kita", "ਹੈ" -> "hai", "ਦਾ" -> "da"). No diacritics, no accents.
+- Saint names and English words: use their normal English spelling (e.g. "Saint Francis", "Carlo Acutis").
+- Keep the punctuation. Sentence case.
+
+Input lines (JSON array):
+${JSON.stringify(scenes.map(s => s.voiceover))}
+
+Respond ONLY with a JSON array of ${scenes.length} strings in the same order.`, 0.1);
+      if (!Array.isArray(out) || out.length !== scenes.length || out.some(x => typeof x !== 'string')) throw new Error('unexpected shape');
+      return out.map((x: string) => x.trim());
+    } catch (e: any) {
+      console.warn(`⚠️ LLM romanization failed (${e.message}); using rule-based transliteration.`);
+      return scenes.map(s => romanizeFallback(s.voiceover, lang));
     }
   }
 
