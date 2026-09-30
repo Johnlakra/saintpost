@@ -6,7 +6,7 @@ export function setupTelegramBot(): Telegraf<Context> {
   const botToken = config.botToken || 'MOCK_TELEGRAM_BOT_TOKEN';
   console.log('🤖 Initializing Telegraf Telegram Bot...');
 
-  const bot = new Telegraf(botToken);
+  const bot = new Telegraf(botToken, { handlerTimeout: 30 * 60 * 1000 }); // video generation takes minutes; default is 90s
 
   // Register command routes
   registerBotCommands(bot);
