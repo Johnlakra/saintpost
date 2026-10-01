@@ -25,6 +25,7 @@ export const config = {
   cloudflareAccountId: process.env.CLOUDFLARE_ACCOUNT_ID || '',
   cloudflareApiToken: process.env.CLOUDFLARE_API_TOKEN || '',
   togetherApiKey: process.env.TOGETHER_API_KEY || '',
+  sarvamApiKey: process.env.SARVAM_API_KEY || '', // Indian-language TTS (Hindi/Punjabi), optional
   pollinationsApiKey: process.env.POLLINATIONS_API_KEY || '',
   huggingfaceApiKey: process.env.HUGGINGFACE_API_KEY || '',
 

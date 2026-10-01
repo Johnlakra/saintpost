@@ -6,6 +6,7 @@ import { MsEdgeTTS, OUTPUT_FORMAT } from 'msedge-tts';
 import * as googleTTS from 'google-tts-api';
 import { config } from '../config/env.js';
 import { ffmpeg, probeDuration } from '../utils/media.js';
+import os from 'os';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -74,24 +75,114 @@ export class TTSService {
     return out;
   }
 
+  /** Languages for which Edge has no neural voice (known after the first lookup): skip it quietly afterwards. */
+  private noEdgeVoice = new Set<Lang>();
+  private geminiModelOk?: string;
+
   private async synthesize(text: string, lang: Lang, file: string): Promise<boolean> {
-    // Paid path only when FREE_MODE=false and a key exists.
-    if (!config.freeMode && config.elevenlabsApiKey) {
-      try { await this.elevenLabs(text, file); return true; }
-      catch (e: any) { console.warn('   ⚠️ ElevenLabs failed:', e.response?.status || e.message); }
+    // Engine order. Edge's free endpoint has NO Punjabi voice, so Punjabi relies on Sarvam / Gemini when a key exists.
+    type Engine = [string, () => Promise<void>];
+    const engines: Engine[] = [];
+    if (!config.freeMode && config.elevenlabsApiKey) engines.push(['ElevenLabs', () => this.elevenLabs(text, file)]);
+    const indic = lang !== 'en';
+    if (indic && config.sarvamApiKey) engines.push(['Sarvam Bulbul', () => this.sarvam(text, lang, file)]);
+    if (!this.noEdgeVoice.has(lang)) engines.push(['Edge neural', () => this.edgeWithRetry(text, lang, file)]);
+    if (config.geminiApiKey) engines.push(['Gemini TTS', () => this.geminiTts(text, lang, file)]);
+    engines.push(['Google (robotic)', () => this.google(text, lang, file)]);
+
+    for (const [name, run] of engines) {
+      try {
+        await run();
+        if (name.startsWith('Google')) console.warn(`   ⚠️ Used the robotic Google voice for ${lang}. Add SARVAM_API_KEY or a working GEMINI_API_KEY for natural Punjabi/Hindi.`);
+        return true;
+      } catch (e: any) {
+        console.warn(`   ⚠️ ${name} TTS failed: ${e.response?.status ? `HTTP ${e.response.status} ${JSON.stringify(e.response.data).slice(0, 140)}` : e.message}`);
+      }
     }
+    return false;
+  }
+
+  private async edgeWithRetry(text: string, lang: Lang, file: string): Promise<void> {
+    let last: any;
     for (let attempt = 1; attempt <= 3; attempt++) {
-      try { await this.edge(text, lang, file); return true; }
+      try { return await this.edge(text, lang, file); }
       catch (e: any) {
-        console.warn(`   ⚠️ Edge neural TTS attempt ${attempt}/3 failed:`, e.message);
-        if (e instanceof NoVoiceError) break;
+        last = e;
+        if (e instanceof NoVoiceError) { this.noEdgeVoice.add(lang); break; }
+        console.warn(`   ⚠️ Edge neural TTS attempt ${attempt}/3 failed: ${e.message}`);
         this.voiceCache.delete(lang);
         await new Promise(r => setTimeout(r, 700 * attempt));
       }
     }
-    try { await this.google(text, lang, file); return true; }
-    catch (e: any) { console.warn('   ⚠️ Google TTS fallback failed:', e.message); }
-    return false;
+    throw last;
+  }
+
+  /** Raw 16-bit PCM (mono) -> mp3 */
+  private async pcmToMp3(pcm: Buffer, rate: number, file: string): Promise<void> {
+    const tmp = path.join(os.tmpdir(), `pcm_${Date.now()}_${Math.random().toString(36).slice(2)}.raw`);
+    fs.writeFileSync(tmp, pcm);
+    try {
+      await ffmpeg(['-f', 's16le', '-ar', String(rate), '-ac', '1', '-i', tmp, '-c:a', 'libmp3lame', '-b:a', '128k', file]);
+    } finally {
+      fs.rmSync(tmp, { force: true });
+    }
+  }
+
+  /** Gemini speech models speak Hindi and Punjabi (language is auto-detected from the script). */
+  private async geminiTts(text: string, lang: Lang, file: string): Promise<void> {
+    const langName = { hi: 'Hindi', pa: 'Punjabi', en: 'English' }[lang];
+    const models = [...new Set([this.geminiModelOk, process.env.GEMINI_TTS_MODEL, 'gemini-2.5-flash-preview-tts', 'gemini-2.5-flash-tts'].filter(Boolean) as string[])];
+    let last: any;
+    for (const model of models) {
+      try {
+        const res = await axios.post(
+          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+          {
+            contents: [{ parts: [{ text: `Read this aloud in ${langName}, in a warm, calm, natural devotional storyteller voice, at an unhurried pace, pronouncing every word clearly like a native speaker:\n\n${text}` }] }],
+            generationConfig: {
+              responseModalities: ['AUDIO'],
+              speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: process.env.GEMINI_TTS_VOICE || 'Sulafat' } } },
+            },
+          },
+          { headers: { 'x-goog-api-key': config.geminiApiKey }, timeout: 90000 }
+        );
+        const part = res.data?.candidates?.[0]?.content?.parts?.find((p: any) => (p.inlineData || p.inline_data)?.data);
+        const inline = part?.inlineData || part?.inline_data;
+        if (!inline?.data) throw new Error('no audio in response');
+        const rate = parseInt(/rate=(\d+)/.exec(String(inline.mimeType || inline.mime_type || ''))?.[1] || '24000', 10);
+        await this.pcmToMp3(Buffer.from(inline.data, 'base64'), rate, file);
+        this.geminiModelOk = model;
+        return;
+      } catch (e: any) {
+        last = e;
+        if (e.response?.status !== 404 && e.response?.status !== 400) break; // quota/auth: other model names won't help
+      }
+    }
+    throw last;
+  }
+
+  /** Sarvam Bulbul: built for Indian languages (Hindi, Punjabi...). */
+  private async sarvam(text: string, lang: Lang, file: string): Promise<void> {
+    const res = await axios.post(
+      'https://api.sarvam.ai/text-to-speech',
+      {
+        text: text.slice(0, 2500),
+        target_language_code: lang === 'pa' ? 'pa-IN' : 'hi-IN',
+        model: process.env.SARVAM_MODEL || 'bulbul:v3',
+        speaker: process.env.SARVAM_SPEAKER || 'shubh',
+        pace: 0.95,
+      },
+      { headers: { 'api-subscription-key': config.sarvamApiKey, 'Content-Type': 'application/json' }, timeout: 60000 }
+    );
+    const b64 = res.data?.audios?.[0];
+    if (!b64) throw new Error('no audio in response');
+    const wav = path.join(os.tmpdir(), `sarvam_${Date.now()}.wav`);
+    fs.writeFileSync(wav, Buffer.from(b64, 'base64'));
+    try {
+      await ffmpeg(['-i', wav, '-c:a', 'libmp3lame', '-b:a', '128k', file]);
+    } finally {
+      fs.rmSync(wav, { force: true });
+    }
   }
 
   private async pickEdgeVoice(tts: MsEdgeTTS, lang: Lang): Promise<string> {
