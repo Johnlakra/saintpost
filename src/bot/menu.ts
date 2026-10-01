@@ -4,6 +4,8 @@ import { config } from '../config/env.js';
 import { db } from '../db/index.js';
 import { SaintPostPipeline, PipelineResult, PostPayloadData } from '../engine/pipeline.js';
 import { SaintFetcherService, SaintRecord } from '../data/sanctusFetcher.js';
+import { LENGTHS, LengthId, DEFAULT_LENGTH } from '../config/lengths.js';
+import { imageProviderStatus } from '../providers/image/index.js';
 import { getPending, setPending, clearPending } from './state.js';
 import { registerWatermarkMenu, handleLogoUpload, handleWatermarkText } from './watermarkMenu.js';
 
@@ -38,6 +40,21 @@ export async function getLang(userId: string): Promise<Lang> {
   } catch { /* table missing -> default */ }
   return config.defaultLanguage || 'hi';
 }
+export async function getLength(userId: string): Promise<LengthId> {
+  try {
+    const r = await db.query(`SELECT value FROM settings WHERE key = $1`, [`length:${userId}`]);
+    const v = r.rows[0]?.value;
+    if (v === 'short' || v === 'standard' || v === 'long') return v;
+  } catch { /* default */ }
+  return DEFAULT_LENGTH;
+}
+async function setLength(userId: string, l: LengthId) {
+  await db.query(
+    `INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = NOW()`,
+    [`length:${userId}`, l]
+  ).catch(() => {});
+}
+
 async function setLang(userId: string, lang: Lang) {
   await db.query(
     `INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = NOW()`,
@@ -65,12 +82,13 @@ export async function saveReferenceUrl(name: string, url: string): Promise<strin
 // ---------- keyboards ----------
 async function mainKeyboard(userId: string) {
   const lang = await getLang(userId);
+  const length = await getLength(userId);
   return Markup.inlineKeyboard([
     [Markup.button.callback("✝️ Today's Feast", 'm:today'), Markup.button.callback('🔎 Pick a Saint', 'm:pick')],
     [Markup.button.callback('📅 Feast by Date', 'm:date'), Markup.button.callback('🖼 Face Photo', 'm:ref')],
     [Markup.button.callback(`🌐 Language: ${LANG_LABEL[lang]}`, 'm:lang'), Markup.button.callback('📱 Accounts', 'm:acc')],
-    [Markup.button.callback('💧 Watermark', 'm:wm'), Markup.button.callback('📊 Status', 'm:status')],
-    [Markup.button.callback('❓ Help', 'm:help')],
+    [Markup.button.callback(`🎞 Length: ${LENGTHS[length].label} (${LENGTHS[length].approx})`, 'm:len'), Markup.button.callback('💧 Watermark', 'm:wm')],
+    [Markup.button.callback('📊 Status', 'm:status'), Markup.button.callback('❓ Help', 'm:help')],
   ]);
 }
 const backRow = [Markup.button.callback('⬅️ Menu', 'm:main')];
@@ -106,7 +124,8 @@ export async function runAndPresent(ctx: Context, saintInput: SaintRecord | stri
   };
 
   try {
-    const result: PipelineResult = await pipeline.runPipelineForSaint(saintInput, lang, { publish: false, onProgress: update });
+    const length = await getLength(uid(ctx));
+    const result: PipelineResult = await pipeline.runPipelineForSaint(saintInput, lang, { publish: false, onProgress: update, length });
     await update(`✅ Done: ${result.saint.name}`);
 
     const id = rememberPreview({ saint: result.saint, lang, payload: result.payload, dateMode });
@@ -133,7 +152,9 @@ export async function runAndPresent(ctx: Context, saintInput: SaintRecord | stri
     }
     await ctx.reply(
       `🖼 Cover: ${result.coverImageUrl}\n` +
-      `🧑 Face reference: ${result.referenceImageUrl || 'none (tap 🖼 Face Photo in the menu to add one)'}`
+      `🧑 Face reference: ${result.referenceImageUrl || 'none (tap 🖼 Face Photo in the menu to add one)'}\n` +
+      `🎞 ${result.sceneCount} scenes${result.animatedScenes ? `, ${result.animatedScenes} with real motion` : ''}` +
+      (result.notes.length ? `\n\n⚠️ Quality notes:\n• ${result.notes.join('\n• ')}\nConsider regenerating before you publish.` : '')
     );
   } catch (err: any) {
     await update(`❌ ${err.message}`);
@@ -210,6 +231,24 @@ export function registerMenu(bot: Telegraf<Context>, auth: (ctx: Context, next: 
     await showMainMenu(ctx, true);
   });
 
+  bot.action('m:len', auth, async ctx => {
+    await ctx.answerCbQuery();
+    const cur = await getLength(uid(ctx));
+    await ctx.editMessageText(
+      '🎞 Video length\n\n' + (Object.values(LENGTHS) as typeof LENGTHS[LengthId][]).map(l => `${l.id === cur ? '✅ ' : ''}${l.label} (${l.approx}, ${l.scenes} scenes)`).join('\n') +
+      '\n\nLonger videos tell the whole story with more detail but take longer to make and use more image credits. Reels and Shorts both allow up to 3 minutes.',
+      Markup.inlineKeyboard([
+        (Object.values(LENGTHS) as typeof LENGTHS[LengthId][]).map(l => Markup.button.callback(`${l.id === cur ? '✅ ' : ''}${l.label} ${l.approx}`, `setlen:${l.id}`)),
+        backRow,
+      ])
+    );
+  });
+  bot.action(/^setlen:(short|standard|long)$/, auth, async ctx => {
+    await setLength(uid(ctx), ctx.match[1] as LengthId);
+    await ctx.answerCbQuery(`Length: ${LENGTHS[ctx.match[1] as LengthId].label}`);
+    await showMainMenu(ctx, true);
+  });
+
   bot.action('m:acc', auth, async ctx => {
     await ctx.answerCbQuery();
     try {
@@ -247,7 +286,7 @@ export function registerMenu(bot: Telegraf<Context>, auth: (ctx: Context, next: 
     } catch { /* keep default */ }
     await ctx.editMessageText(
       `📊 STATUS\n\n${dbLine}\n🤖 LLM: ${config.openrouterModel || 'auto (deepseek → free models)'}\n` +
-      `🎙️ Voice: ${[config.sarvamApiKey && 'Sarvam', 'Edge neural (Hindi/English)', config.geminiApiKey && 'Gemini TTS', 'Google fallback'].filter(Boolean).join(' → ')}\n🖼️ Images: ${config.falApiKey ? 'fal.ai → ' : ''}HuggingFace → Pollinations\n` +
+      `🧰 Image providers:\n${imageProviderStatus().filter(p => p.state !== 'off').map(p => `${p.state === 'ready' ? '🟢' : '⏸'} ${p.label} (${p.tier}) ${p.note}`).join('\n') || 'none configured'}\n🎙️ Voice: ${[config.sarvamApiKey && 'Sarvam', 'Edge neural (Hindi/English)', config.geminiApiKey && 'Gemini TTS', 'Google fallback'].filter(Boolean).join(' → ')}\n🖼️ Images: ${config.falApiKey ? 'fal.ai → ' : ''}HuggingFace → Pollinations\n` +
       `⚡ Free mode: ${config.freeMode ? 'on' : 'off'}`,
       Markup.inlineKeyboard([backRow])
     );
