@@ -17,6 +17,7 @@ export const IMAGE_PROVIDERS: ImageProvider[] = [
 ];
 
 const TIER_RANK: Record<Tier, number> = { premium: 0, standard: 1, basic: 2 };
+const FLAKY_PAUSE_MS = 10 * 60_000;
 const MIN_BASIC_BYTES = parseInt(process.env.MIN_BASIC_IMAGE_KB || '250', 10) * 1024;
 
 export interface ImageResult { buffer: Buffer; provider: ImageProvider; usedReference: boolean }
@@ -53,8 +54,10 @@ export async function generateImage(req: ImageRequest, opts: { allowBasic?: bool
 
   const failures: string[] = [];
   const rounds = 3;
+  let flaky = new Set<string>(); // providers that failed temporarily in the latest round
   for (let round = 1; round <= rounds; round++) {
     let transient = false;
+    flaky = new Set<string>();
     for (const { p, withRef } of order) {
       const cool = coolingFor(p.id);
       if (cool) { if (round === 1) failures.push(`${p.label}: paused (${cool.reason})`); continue; }
@@ -80,12 +83,17 @@ export async function generateImage(req: ImageRequest, opts: { allowBasic?: bool
             break;
           }
           transient = true;
-          if (attempt === (p.tries ?? 1)) failures.push(`${p.label}: ${msg}`);
+          if (attempt === (p.tries ?? 1)) { flaky.add(p.id); failures.push(`${p.label}: ${msg}`); }
           else await new Promise(r => setTimeout(r, 6000 * attempt));
         }
       }
     }
-    if (!transient || round === rounds) break;
+    if (!transient) break;
+    if (round === rounds) {
+      // Still failing after every retry round: rest it, so the next scenes don't each wait out the same retries.
+      flaky.forEach(id => cooldown(id, FLAKY_PAUSE_MS, 'kept failing'));
+      break;
+    }
     const wait = 15000 * round;
     console.warn(`     … temporary failures everywhere; waiting ${wait / 1000}s then retrying good providers (round ${round + 1}/${rounds})`);
     await new Promise(r => setTimeout(r, wait));
