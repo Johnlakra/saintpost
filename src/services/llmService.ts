@@ -207,6 +207,9 @@ Respond ONLY with a JSON array of ${scenes.length} strings in the same order.`, 
             model: model,
             messages: [{ role: 'user', content: prompt }],
             temperature,
+            // Without a cap OpenRouter reserves the model's full output limit (16k for DeepSeek) against the
+            // key's credit balance and refuses the call when the balance can't cover it.
+            max_tokens: config.openrouterMaxTokens,
           },
           {
             headers: {

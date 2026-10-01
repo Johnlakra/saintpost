@@ -20,6 +20,7 @@ export const config = {
   // AI Content Models (OpenRouter / Free Tier)
   openrouterApiKey: process.env.OPENROUTER_API_KEY || '',
   openrouterModel: process.env.OPENROUTER_MODEL || '',
+  openrouterMaxTokens: Number(process.env.OPENROUTER_MAX_TOKENS) || 10000,
   // Extra free-tier image providers (all optional)
   geminiApiKey: process.env.GEMINI_API_KEY || '',
   cloudflareAccountId: process.env.CLOUDFLARE_ACCOUNT_ID || '',
