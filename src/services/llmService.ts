@@ -2,6 +2,7 @@ import axios from 'axios';
 import { config } from '../config/env.js';
 import { SaintRecord } from '../data/sanctusFetcher.js';
 import { romanizeFallback } from '../utils/romanize.js';
+import { LENGTHS, LengthPreset, DEFAULT_LENGTH } from '../config/lengths.js';
 
 export interface SceneScript {
   subtitle?: string; // Roman-script (Hinglish/Pinglish) version of the voiceover for on-screen subtitles
@@ -214,7 +215,7 @@ Respond ONLY with a JSON array of ${scenes.length} strings in the same order.`, 
               'X-Title': 'SaintPost Automation Bot',
               'Content-Type': 'application/json',
             },
-            timeout: 90000,
+            timeout: 240000, // long scripts (15 scenes) can take a couple of minutes
           }
         );
 
@@ -237,7 +238,8 @@ Respond ONLY with a JSON array of ${scenes.length} strings in the same order.`, 
    */
   async generateSaintContentPackage(
     saint: SaintRecord,
-    targetLang: 'en' | 'hi' | 'pa' = config.defaultLanguage || 'hi'
+    targetLang: 'en' | 'hi' | 'pa' = config.defaultLanguage || 'hi',
+    preset: LengthPreset = LENGTHS[DEFAULT_LENGTH]
   ): Promise<GeneratedContent> {
     const langNames: Record<string, string> = {
       hi: 'Simple, Everyday Conversational Hindi (आसान और सरल हिंदी, Devanagari script)',
@@ -253,81 +255,73 @@ Respond ONLY with a JSON array of ${scenes.length} strings in the same order.`, 
     }
 
     try {
-      // Prompt 1: Story + Lessons + Did You Know in target language
-      const storyPrompt = `
-You are a Catholic content writer creating devotional social media posts.
+      // Prompt 1: FACT SHEET. Pull every relevant documented fact out of the source, in the target language,
+      // so the script can be complete, accurate and well organised (and lessons are tied to real events).
+      const sourceText = (saint.facts || saint.short_description || 'No source available - say only what is certain about this saint.').slice(0, 9000);
+      const factPrompt = `
+You are a careful Catholic historian and teacher preparing a video about "${saint.name}" for a wide audience, including people who are not Catholic and people who know nothing about saints.
 
-Language Instruction: Write all output text STRICTLY in ${langLabel}.
-IMPORTANT FOR HINDI: Use extremely simple, clear, everyday conversational Hindi that is easy for anyone (young and old) to understand. Avoid complex, archaic Sanskritized or overly academic vocabulary.
+Language: write every text value STRICTLY in ${langLabel}. ${targetLang === 'hi' ? 'Use very simple everyday spoken Hindi, no heavy Sanskrit words.' : ''}${targetLang === 'pa' ? 'Use simple everyday spoken Punjabi.' : ''}
+Feast: Month ${saint.feast_month}, Day ${saint.feast_day}${saint.rank ? ` (${saint.rank})` : ''}. Patronage: ${saint.patronage || 'n/a'}. Era: ${saint.era || 'n/a'}. Region: ${saint.region || 'n/a'}.
 
-Saint: "${saint.name}"
-Feast Date: Month ${saint.feast_month}, Day ${saint.feast_day}
-Era: ${saint.era || 'unknown - use your own knowledge of this saint'}
-Region: ${saint.region || 'unknown - use your own knowledge of this saint'}
-Patronage: ${saint.patronage || 'Church'}
-Short Description: ${saint.short_description || ''}
+SOURCE FACTS (documented - the ONLY allowed basis for facts):
+${sourceText}
 
-SOURCE FACTS (documented biography - the ONLY allowed basis for facts):
-${(saint.facts || saint.short_description || 'No source available - say only what is certain about this saint.').slice(0, 7000)}
+FACT RULES: use only what the SOURCE states. No invented events, quotes, miracles, dates, places, relatives or objects. If something is unknown, leave it out. Keep every date and place exact.
 
-FACT RULES: Use only facts stated in SOURCE FACTS. Do not invent events, quotes, miracles, places, dates, relationships or objects. If something is not in SOURCE FACTS, leave it out. Keep dates and places accurate.
-
-Please generate a JSON object with the following fields:
-1. "full_story": A 150-200 word engaging story about ${saint.name} written in ${langLabel}. Warm, simple, devotional tone.
-2. "what_we_learn": Array of exactly 3 practical lessons for modern Catholics written in ${langLabel} (max 15 words each, starting with simple action verbs).
-3. "did_you_know": 1 fascinating, surprising, lesser-known historical fact written in ${langLabel} (1-2 simple sentences).
-
+Extract a JSON object:
+{
+  "hook": "one surprising, true, attention-grabbing opening line or question about this saint (max 18 words)",
+  "who": "who they were in 2 simple sentences: when and where they lived, and what they were (e.g. student, bishop, nun)",
+  "timeline": [ {"when": "year or age, as stated", "what": "one clear sentence"} ],   // 6 to 12 key moments, in order
+  "key_deeds": ["what they actually did that mattered, simple sentences (3 to 6)"],
+  "struggles": ["hardships they faced, only if documented (0 to 4)"],
+  "why_saint": "why the Church honours them: recognition or canonization only if documented, in simple words",
+  "feast_and_patronage": "what the Church celebrates on their feast day and whom they are patron of, only if documented",
+  "what_we_learn": ["exactly 3 practical lessons, each starts with a verb, max 15 words, each tied to a real event from their life"],
+  "did_you_know": "1 true, surprising, lesser-known fact from the SOURCE (1-2 simple sentences)",
+  "terms": [ {"term": "a church word a beginner may not know that you use (e.g. beatified, canonized, Carmelite)", "plain": "very short plain explanation"} ]
+}
 Respond ONLY with valid JSON.
 `;
+      const factData = JSON.parse((await this.queryOpenRouter(factPrompt, undefined, 0.3)).replace(/```json|```/g, '').match(/\{[\s\S]*\}/)?.[0] || '');
+      if (!Array.isArray(factData.what_we_learn) || factData.what_we_learn.length < 3 || !factData.did_you_know) throw new Error('LLM returned an incomplete fact sheet');
+      const storyData = { what_we_learn: factData.what_we_learn as string[], did_you_know: String(factData.did_you_know), full_story: '' };
 
-      const storyResponseStr = await this.queryOpenRouter(storyPrompt);
-      const cleanedStoryJson = storyResponseStr.replace(/```json|```/g, '').trim();
-      const storyData = JSON.parse(cleanedStoryJson);
-
-      // Prompt 2: Video Script Breakdown (in target language)
+      // Prompt 2: SCRIPT built from the fact sheet, following the storytelling arc for the chosen length.
       const scriptPrompt = `
-Create a 30-60 second Instagram Reel / YouTube Shorts script for "${saint.name}".
+Write the script for a vertical video (Instagram Reel / YouTube Short) about "${saint.name}", about ${preset.approx}, exactly ${preset.scenes} scenes.
 
-Language Instruction: The "voiceover" and "text_overlay" fields MUST be written in ${langLabel}. Visual descriptions MUST be in English for image generation models.
-text_overlay rules: a short title or key phrase only (max 6 words). NEVER put account names, @handles, URLs, hashtags, or follow/subscribe/like/share text in text_overlay or voiceover.
-Voiceover rules: each scene's voiceover is ONE or TWO short natural spoken sentences (12-22 words), written exactly as a warm storyteller would SAY it aloud. Write the saint's name and any foreign word in the target script (not Latin letters) so the text-to-speech voice pronounces it correctly. No emojis, no symbols, no hashtags in voiceover. Together all scenes must narrate the full story, the 3 lessons, and the "did you know" fact. The last scene ends with a short prayer or closing reflection about the saint - NEVER a call to follow, subscribe, like or share.
-Visual rules: each "visual" is a concrete scene (setting, action, lighting); never include text, letters or logos in the image.
-Script fidelity: every scene must depict only events/places stated in the Story Context and the SOURCE below; add no invented events, clothing, props or symbols (no halo, robe, cross or rosary unless documented). Use the real era's technology and settings.
-SOURCE: ${(saint.facts || '').slice(0, 3500)}
-SAINT APPEARANCE (must stay identical in every scene, including illness/death scenes): ${saint.appearance || 'use accurate age, clothing and setting for this saint'}
-Whenever the saint appears in a "visual", describe them as exactly that person (same apparent age, gender, hair and clothing style). NEVER show the saint as an old man/woman unless the appearance above says so. If the saint died young, every scene, including sickness, hospital or death scenes, shows the young person. Keep historical setting and clothing accurate to the saint's real time and place.
+AUDIENCE: everyone, including people who know nothing about the Church. Be warm, clear and interesting. Short sentences. Explain any Church word the first time you use it, in plain words (see "terms"). No jargon, no preaching tone, no long lists of dates: use only the dates that make the story easier to follow.
+STORYTELLING: open with the hook so people keep watching, then tell it as a story with a clear beginning, middle and end. Each scene should reveal ONE new thing and flow into the next. Cover this arc in order: ${preset.arc}.
+INFORMATIVE: include the most important documented facts: who, when, where, what they did, why they are a saint, their patronage, and what the Church celebrates on their feast day. Skip trivial details. Every lesson must be tied to a real event from their life.
 
-Story Context (${langLabel}):
-${storyData.full_story}
+Language: "voiceover" and "text_overlay" MUST be in ${langLabel}. "visual" MUST be in English (it is used to paint the scene).
+text_overlay rules: a short title or key phrase only (max 6 words), or "" when nothing is needed. NEVER put account names, @handles, URLs, hashtags, or follow/subscribe/like/share text anywhere.
+Voiceover rules: ${preset.words[0]}-${preset.words[1]} spoken words per scene, in natural sentences exactly as a warm storyteller would SAY them aloud. Write the saint's name and any foreign word in the target script (not Latin letters) so the voice pronounces it correctly. No emojis, symbols or hashtags. The last scene is a short prayer or closing thought about the saint - NEVER a call to follow, subscribe, like or share.
+Visual rules: each "visual" is a concrete scene (place, action, light) that shows what the narration says; never include text, letters or logos.
+Fidelity: depict only events/places stated in the FACT SHEET; add no invented events, clothing, props or symbols (no halo, robe, cross or rosary unless documented). Use the real era's technology and settings.
+SAINT APPEARANCE (identical in every scene, including illness/death scenes): ${saint.appearance || 'use accurate age, clothing and setting for this saint'}
+Whenever the saint appears in a "visual", describe them as exactly that person (same apparent age, gender, hair, clothing style). NEVER show the saint old unless the appearance above says so.
 
-What We Learn:
-${storyData.what_we_learn.join('\n')}
+FACT SHEET (JSON):
+${JSON.stringify(factData).slice(0, 9000)}
 
-Did You Know:
-${storyData.did_you_know}
-
-Format as a JSON array of 5 to 7 scene objects:
-[
-  {
-    "scene_number": 1,
-    "duration": 5,
-    "visual": "English visual prompt description of scene 1 for FLUX/SDXL image generator...",
-    "voiceover": "Narration text in ${langLabel}...",
-    "text_overlay": "On-screen title text in ${langLabel}..."
-  }
-]
-
-Respond ONLY with valid JSON array.
+Format: a JSON array of exactly ${preset.scenes} objects:
+[ { "scene_number": 1, "duration": 7, "visual": "...", "voiceover": "...", "text_overlay": "..." } ]
+Respond ONLY with the JSON array.
 `;
 
-      const scriptResponseStr = await this.queryOpenRouter(scriptPrompt);
+      const scriptResponseStr = await this.queryOpenRouter(scriptPrompt, undefined, 0.6);
       const arr = scriptResponseStr.replace(/```json|```/g, '').match(/\[[\s\S]*\]/);
       const videoScript: SceneScript[] = JSON.parse(arr ? arr[0] : '');
-      if (!Array.isArray(videoScript) || videoScript.length < 3 || videoScript.some(sc => !sc.visual || !sc.voiceover)) {
-        throw new Error('LLM returned an incomplete video script');
+      const minScenes = Math.max(3, Math.floor(preset.scenes * 0.7));
+      if (!Array.isArray(videoScript) || videoScript.length < minScenes || videoScript.some(sc => !sc.visual || !sc.voiceover)) {
+        throw new Error(`LLM returned an incomplete video script (${Array.isArray(videoScript) ? videoScript.length : 0}/${preset.scenes} scenes)`);
       }
       videoScript.forEach((sc, i) => { sc.scene_number = i + 1; });
       videoScript.forEach(sc => LLMService.stripPromo(sc));
+      storyData.full_story = videoScript.map(sc => sc.voiceover).join(' ');
 
       // Prompt 3: Caption & Hashtags in target language
       const captionPrompt = `

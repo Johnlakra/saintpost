@@ -6,6 +6,7 @@ import { config } from './config/env.js';
 import { setupTelegramBot } from './bot/bot.js';
 import { SaintPostPipeline } from './engine/pipeline.js';
 import { db } from './db/index.js';
+import { setNotifier, notifyAdmins } from './services/notifier.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -23,6 +24,22 @@ app.use('/audio', express.static(path.join(publicDir, 'audio')));
 // Initialize Telegram Bot
 const bot = setupTelegramBot();
 const pipeline = new SaintPostPipeline();
+setNotifier((chatId, text) => bot.telegram.sendMessage(chatId, text));
+
+/**
+ * Unattended daily run. Builds the video first and publishes ONLY if quality was not compromised;
+ * otherwise it stops and tells the admins (so a poor video never goes out on its own).
+ */
+async function runDailyPost() {
+  const result = await pipeline.runPipelineForSaint(undefined, config.defaultLanguage, { publish: false });
+  if (result.degraded) {
+    await notifyAdmins(`⚠️ Today's post for ${result.saint.name} was NOT published automatically.\n${result.notes.join('\n')}\n\nPreview: ${result.finalVideoUrl}\nOpen /menu to review, regenerate or publish.`);
+    return { result, publishedCount: 0 };
+  }
+  const pub = await pipeline.publishPayload(result.payload);
+  await notifyAdmins(`✅ Daily post published: ${result.saint.name} → ${pub.successCount} account(s).${pub.errors.length ? `\n⚠️ ${pub.errors.join('\n')}` : ''}`);
+  return { result, publishedCount: pub.successCount };
+}
 
 // Face-reference photos uploaded through Telegram (stored in Neon so they survive redeploys)
 app.get('/ref/:id', async (req, res) => {
@@ -65,12 +82,12 @@ app.post('/api/trigger-daily-post', async (req, res) => {
 
   console.log('⏰ Triggering Daily Feast Automation Flow...');
   try {
-    const result = await pipeline.runPipelineForSaint();
+    const { result, publishedCount } = await runDailyPost();
     res.status(200).json({
-      status: 'success',
+      status: result.degraded ? 'needs_review' : 'success',
       saint: result.saint.name,
       videoUrl: result.finalVideoUrl,
-      publishedCount: result.publishResult.successCount,
+      publishedCount,
     });
   } catch (err: any) {
     console.error('❌ Daily automated flow failed:', err);
@@ -82,9 +99,10 @@ app.post('/api/trigger-daily-post', async (req, res) => {
 cron.schedule('30 0 * * *', async () => {
   console.log('⏰ Executing internal Cron Job: Daily Saint Feast Automation Flow...');
   try {
-    await pipeline.runPipelineForSaint();
+    await runDailyPost();
   } catch (err: any) {
     console.error('❌ Scheduled cron execution error:', err.message);
+    await notifyAdmins(`❌ Daily post failed: ${err.message}`);
   }
 });
 

@@ -2,6 +2,8 @@ import { SaintFetcherService, SaintRecord } from '../data/sanctusFetcher.js';
 import { LLMService, GeneratedContent } from '../services/llmService.js';
 import { VisualAssetService } from '../services/visualAssetService.js';
 import { VideoService } from '../services/videoService.js';
+import { aiVideoAvailable } from '../providers/video/index.js';
+import { LENGTHS, LengthId, DEFAULT_LENGTH } from '../config/lengths.js';
 import { TTSService } from '../services/ttsService.js';
 import { VideoAssemblyService, AssemblyScene } from '../services/videoAssemblyService.js';
 import { FactService } from '../services/factService.js';
@@ -13,6 +15,8 @@ export interface PipelineOptions {
   /** false = build the video and stop for admin review (menu/preview flows). Default true (daily cron). */
   publish?: boolean;
   onProgress?: (message: string) => void;
+  /** short (~45s) | standard (~90s) | long (~2.5 min) */
+  length?: LengthId;
 }
 
 export interface PostPayloadData {
@@ -33,6 +37,11 @@ export interface PipelineResult {
   publishResult: { successCount: number; errors: string[] };
   published: boolean;
   payload: PostPayloadData;
+  /** true when quality was compromised (e.g. reused images); such videos are never auto-published */
+  degraded: boolean;
+  notes: string[];
+  sceneCount: number;
+  animatedScenes: number;
 }
 
 let pipelineBusy = false;
@@ -129,7 +138,9 @@ export class SaintPostPipeline {
     }
 
     // STEP 2: GENERATE CONTENT (LLM in Target Language)
-    const content = await this.llmService.generateSaintContentPackage(saint, targetLang);
+    const preset = LENGTHS[opts.length || DEFAULT_LENGTH];
+    progress(`✍️ Writing a ${preset.label.toLowerCase()} script (${preset.approx}, ${preset.scenes} scenes)...`);
+    const content = await this.llmService.generateSaintContentPackage(saint, targetLang, preset);
     console.log(`✅ Step 2: LLM Content Generated (${content.video_script.length} scenes in ${targetLang.toUpperCase()})`);
     progress('✍️ Script written. Designing detailed scenes...');
 
@@ -164,6 +175,9 @@ export class SaintPostPipeline {
       content.video_script,
       characterSheetUrl
     );
+    if (this.visualService.report.reused.length > Math.floor(sceneAssets.length * 0.4)) {
+      throw new Error(`Too many scenes (${this.visualService.report.reused.length}/${sceneAssets.length}) could not get a good image (image credits/quota used up). I stopped instead of making a poor video. Check the Providers screen in the menu.`);
+    }
     console.log(`✅ Step 4: Visual Images Generated (1 Cover + ${sceneAssets.length} Scenes)`);
     progress('🎙️ Recording the narration...');
 
@@ -177,19 +191,31 @@ export class SaintPostPipeline {
     console.log(`✅ Step 5: ${audios.length} scene voiceovers generated (${targetLang.toUpperCase()})`);
     progress('🎞️ Animating scenes...');
 
-    // STEP 6: GENERATE VIDEO CLIPS, each exactly as long as its narration (+0.5s breathing room)
+    // STEP 6: GENERATE VIDEO CLIPS, each exactly as long as its narration (+0.5s breathing room).
+    // The first few scenes get real AI motion when a provider is available; the rest use the Ken Burns move.
+    const notes: string[] = [];
+    const reusedScenes = this.visualService.report.reused;
+    const maxAi = parseInt(process.env.VIDEO_AI_SCENES || '3', 10);
+    let animatedScenes = 0;
     const assemblyScenes: AssemblyScene[] = [];
     for (let i = 0; i < sceneAssets.length; i++) {
       const durationSec = Math.max(3, audios[i].durationSec + 0.5);
-      const clipPath = await this.videoService.generateVideoClip(sceneAssets[i].localPath, durationSec, i + 1);
+      const animate = animatedScenes < maxAi && !reusedScenes.includes(i + 1) && aiVideoAvailable();
+      const clip = await this.videoService.generateSceneClip(sceneAssets[i].localPath, durationSec, i + 1, {
+        animate,
+        imageUrl: sceneAssets[i].url,
+        prompt: scenes[i].image_prompt || scenes[i].visual,
+      });
+      if (clip.animated) animatedScenes++;
       assemblyScenes.push({
-        clipPath,
+        clipPath: clip.path,
         audioPath: audios[i].audioPath,
         durationSec,
         narration: scenes[i].subtitle || scenes[i].voiceover || '',
         overlay: scenes[i].text_overlay || '',
       });
     }
+    if (reusedScenes.length) notes.push(`${reusedScenes.length} scene(s) reused an earlier image (${reusedScenes.join(', ')}) because the image services ran out of credit/quota`);
     console.log(`✅ Step 6: ${assemblyScenes.length} video clips generated`);
     progress('🎬 Assembling the final video...');
 
@@ -249,6 +275,10 @@ export class SaintPostPipeline {
       publishResult,
       published: shouldPublish,
       payload,
+      degraded: notes.length > 0,
+      notes,
+      sceneCount: assemblyScenes.length,
+      animatedScenes,
     };
   }
 }
