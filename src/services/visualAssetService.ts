@@ -159,7 +159,8 @@ export class VisualAssetService {
 
     const errors: string[] = [];
     for (const [name, fn, tries] of providers) {
-      const off = this.disabledUntil.get(name);
+      const family = name.replace(/ \(reference photo\)$/, '');
+      const off = this.disabledUntil.get(family);
       if (off && off > Date.now()) { errors.push(`${name}: disabled (auth/credit problem)`); continue; }
       for (let attempt = 1; attempt <= tries; attempt++) {
         try {
@@ -171,15 +172,21 @@ export class VisualAssetService {
           const msg = this.describeError(e);
           console.warn(`     ✗ ${name} attempt ${attempt}/${tries}: ${msg}`);
           const st = e.response?.status;
+          if (/only available on enter\.pollinations\.ai/i.test(msg)) {
+            // kontext needs a Pollinations account key: stop trying for a day
+            this.disabledUntil.set(family, Date.now() + 24 * 3600 * 1000);
+            errors.push(`${name}: needs POLLINATIONS_API_KEY`);
+            break;
+          }
           if (st === 429 && !name.startsWith('Pollinations')) {
             // Daily/minute quota hit: rest this provider for a few minutes instead of hammering it.
-            this.disabledUntil.set(name, Date.now() + 5 * 60 * 1000);
+            this.disabledUntil.set(family, Date.now() + 5 * 60 * 1000);
             errors.push(`${name}: ${msg}`);
             break;
           }
           if ((st === 401 || st === 402 || st === 403) && !name.startsWith('Pollinations')) {
             // Key locked / out of credit: don't waste time (or quota) retrying for 30 minutes.
-            this.disabledUntil.set(name, Date.now() + 30 * 60 * 1000);
+            this.disabledUntil.set(family, Date.now() + 30 * 60 * 1000);
             errors.push(`${name}: ${msg}`);
             break;
           }

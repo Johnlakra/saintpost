@@ -30,6 +30,8 @@ const PROSODY: Record<Lang, { rate: string; pitch: string }> = {
   en: { rate: '-5%', pitch: '+0Hz' },
 };
 
+class NoVoiceError extends Error {}
+
 export class TTSService {
   private outputDir: string;
   private voiceCache = new Map<Lang, string>();
@@ -82,6 +84,7 @@ export class TTSService {
       try { await this.edge(text, lang, file); return true; }
       catch (e: any) {
         console.warn(`   ⚠️ Edge neural TTS attempt ${attempt}/3 failed:`, e.message);
+        if (e instanceof NoVoiceError) break;
         this.voiceCache.delete(lang);
         await new Promise(r => setTimeout(r, 700 * attempt));
       }
@@ -94,32 +97,49 @@ export class TTSService {
   private async pickEdgeVoice(tts: MsEdgeTTS, lang: Lang): Promise<string> {
     const cached = this.voiceCache.get(lang);
     if (cached) return cached;
-    let chosen = EDGE_VOICES[lang][0];
+    let names: Set<string> | null = null;
     try {
-      const names = new Set((await tts.getVoices()).map(v => v.ShortName));
-      chosen = EDGE_VOICES[lang].find(v => names.has(v)) || chosen;
-    } catch { /* use first candidate */ }
+      names = new Set((await tts.getVoices()).map(v => v.ShortName));
+    } catch { /* offline listing: fall through and try the first candidate */ }
+    let chosen = EDGE_VOICES[lang][0];
+    if (names) {
+      const found = EDGE_VOICES[lang].find(v => names!.has(v));
+      if (!found) {
+        const locale = lang === 'en' ? 'en-' : `${lang}-IN`;
+        const have = [...names].filter(n => n.startsWith(locale));
+        console.warn(`   ⚠️ None of ${EDGE_VOICES[lang].join(', ')} exist in Edge's voice list. Available ${locale}* voices: ${have.join(', ') || 'none'}`);
+        if (have.length === 0) throw new NoVoiceError(`No Edge neural voice for ${lang}`);
+        chosen = have[0];
+      } else {
+        chosen = found;
+      }
+    }
+    console.log(`   🎤 Edge voice for ${lang}: ${chosen}`);
     this.voiceCache.set(lang, chosen);
     return chosen;
   }
 
+  /**
+   * Collect the audio stream in memory. (msedge-tts' toFile() has a bug: if the connection drops early it calls
+   * fs.unlinkSync on a file that was never created, which throws an UNCAUGHT exception and kills the whole server.)
+   */
   private async edge(text: string, lang: Lang, file: string): Promise<void> {
     const tts = new MsEdgeTTS();
     try {
       const voice = await this.pickEdgeVoice(tts, lang);
       await tts.setMetadata(voice, OUTPUT_FORMAT.AUDIO_24KHZ_96KBITRATE_MONO_MP3);
-      const tmpDir = fs.mkdtempSync(path.join(this.outputDir, 'edge_'));
-      try {
-        const { audioFilePath } = await tts.toFile(tmpDir, text, PROSODY[lang]);
-        if (!fs.existsSync(audioFilePath) || fs.statSync(audioFilePath).size < 2000) {
-          throw new Error('Edge TTS returned empty audio');
-        }
-        fs.copyFileSync(audioFilePath, file);
-      } finally {
-        fs.rmSync(tmpDir, { recursive: true, force: true });
-      }
+      const { audioStream } = tts.toStream(text, PROSODY[lang]);
+      const buf: Buffer = await new Promise((resolve, reject) => {
+        const chunks: Buffer[] = [];
+        const timer = setTimeout(() => { audioStream.destroy(); reject(new Error('Edge TTS timed out')); }, 60000);
+        audioStream.on('data', (c: Buffer) => chunks.push(c));
+        audioStream.once('error', (e: Error) => { clearTimeout(timer); reject(e); });
+        audioStream.once('close', () => { clearTimeout(timer); resolve(Buffer.concat(chunks)); });
+      });
+      if (buf.length < 2000) throw new Error('Edge TTS returned empty audio');
+      fs.writeFileSync(file, buf);
     } finally {
-      tts.close();
+      try { tts.close(); } catch { /* ignore */ }
     }
   }
 
