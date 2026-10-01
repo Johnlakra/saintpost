@@ -247,7 +247,7 @@ export function registerMenu(bot: Telegraf<Context>, auth: (ctx: Context, next: 
     } catch { /* keep default */ }
     await ctx.editMessageText(
       `📊 STATUS\n\n${dbLine}\n🤖 LLM: ${config.openrouterModel || 'auto (deepseek → free models)'}\n` +
-      `🎙️ Voice: Microsoft neural (Hindi / Punjabi / English)\n🖼️ Images: ${config.falApiKey ? 'fal.ai → ' : ''}HuggingFace → Pollinations\n` +
+      `🎙️ Voice: ${[config.sarvamApiKey && 'Sarvam', 'Edge neural (Hindi/English)', config.geminiApiKey && 'Gemini TTS', 'Google fallback'].filter(Boolean).join(' → ')}\n🖼️ Images: ${config.falApiKey ? 'fal.ai → ' : ''}HuggingFace → Pollinations\n` +
       `⚡ Free mode: ${config.freeMode ? 'on' : 'off'}`,
       Markup.inlineKeyboard([backRow])
     );
