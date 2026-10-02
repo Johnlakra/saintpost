@@ -12,6 +12,7 @@ export interface Dossier {
   timeline: Array<{ when: string; what: string }>;
   key_deeds: string[]; struggles: string[]; why_saint: string; feast_and_patronage: string;
   what_we_learn: string[]; did_you_know: string;
+  knowing_god?: string;
   terms: Array<{ term: string; plain: string }>;
   appearance: string;
   /** person = one saint; angels/group/mystery/object = the feast is about something else (e.g. the Holy Guardian Angels) */
@@ -39,6 +40,25 @@ export interface ScenePrompt {
   usesMain: boolean;
 }
 export interface VisualBrief { cover: ScenePrompt; scenes: ScenePrompt[] }
+
+
+/**
+ * How the words must sound: everyday spoken language that a child, a teenager or any working person understands,
+ * never textbook or Sanskritised/literary vocabulary. Shared by the script and the translation prompts.
+ */
+export function spokenStyle(lang: 'hi' | 'pa' | 'en'): string {
+  const common = `Use ONLY words people really say in daily life. Before you answer, re-read every sentence and replace any word that a 10-year-old or a daily-wage worker would not use in a normal chat with a simple, common one. Short sentences (about 10-14 words). Say it the way a friendly elder brother or sister would. Common English words that everyone already uses (church, priest, sister, mother, hospital, school) are welcome and better than hard words.`;
+  if (lang === 'hi') return `${common}
+HINDI: write simple spoken Hindi (like Bollywood dialogue or a village chat), NOT shuddh/Sanskritised Hindi. Prefer: भगवान or परमेश्वर (not ईश्वरीय/परमात्मा), प्रार्थना (fine), मदद (not सहायता/सहयोग), दिल (not हृदय/अंतःकरण), खुश (not प्रसन्न/आनंदित), सीख (not शिक्षा/उपदेश), बहुत (not अत्यंत/परम), भरोसा (not विश्वास-परायणता), गरीब (not निर्धन/दरिद्र), बीमार (not रोगग्रस्त), ज़िंदगी (not जीवन-यात्रा), पादरी / फादर, सिस्टर / नन. Avoid words like: तपस्वी, पुण्यात्मा, धर्मपरायण, आराधना, अनुकंपा, कृपापात्र, समर्पण-भाव, संन्यास, त्याग-भावना, वैराग्य.`;
+  if (lang === 'pa') return `${common}
+PUNJABI: write the Punjabi people actually speak at home (Gurmukhi script), NOT literary or Sanskritised Punjabi. Prefer: ਰੱਬ or ਪਰਮੇਸ਼ੁਰ, ਮਦਦ (not ਸਹਾਇਤਾ), ਦਿਲ, ਖ਼ੁਸ਼, ਸਿੱਖਿਆ/ਸਿੱਖਣਾ, ਬਹੁਤ, ਭਰੋਸਾ, ਗ਼ਰੀਬ, ਬਿਮਾਰ, ਜ਼ਿੰਦਗੀ, ਪਾਦਰੀ / ਫਾਦਰ, ਸਿਸਟਰ. Avoid rare formal words such as ਆਰਾਧਨਾ, ਤਪੱਸਵੀ, ਧਰਮਪਰਾਇਣ, ਵੈਰਾਗ, ਅਨੁਕੰਪਾ.`;
+  return `${common}
+ENGLISH: simple words a 10-year-old knows (about grade 5 level). Prefer "help" over "assist", "show" over "demonstrate", "begin" over "commence", "sad" over "sorrowful". No theological jargon without a one-line plain explanation.`;
+}
+
+/** Tone and content every video must have. */
+export const INSPIRING_BRIEF = `TONE: inspiring, warm, hopeful, never preachy or scary. The viewer should finish feeling lifted and wanting to be a better person.
+CONTENT: (1) a few surprising, TRUE and interesting facts about this subject, told as a story; (2) practical lessons that can improve the viewer's real life today (one concrete thing they can do this week); (3) what this shows us about God, so the viewer comes to know God better; (4) end with a short, simple prayer or hopeful thought. Use only documented facts.`;
 
 /** The physical-logic / anatomy rulebook shared by the prompt director and the prompt checker. */
 export const VISUAL_RULES = `VISUAL LOGIC RULES (apply to every prompt):
@@ -153,6 +173,7 @@ Return JSON:
   "feast_and_patronage": "what the Church celebrates on their feast day and whom they are patron of, only if documented",
   "what_we_learn": ["exactly 3 practical lessons, each starts with a verb, max 15 words, each tied to a real event"],
   "did_you_know": "1 true, surprising, lesser-known fact from the SOURCE (1-2 simple sentences)",
+  "knowing_god": "one simple sentence: what this subject's life or the feast shows us about God (only from documented teaching or the SOURCE)",
   "terms": [ {"term": "a Church word a beginner may not know", "plain": "very short plain explanation"} ],
   "subject_type": "person" | "angels" | "group" | "mystery" | "object"   (person = the feast honours one real saint; angels = a feast of angels; group = several saints/martyrs; mystery/object = e.g. the Holy Cross, a title of Mary),
   "cast": [ {"role": "who or what appears in the story", "look": "age, gender, complexion, hair and clothing, correct for their real time and place; every cast member must look CLEARLY DIFFERENT from the others in age/gender/hair/clothing"} ]   (3 to 6 entries: the saint, and everyone else the story needs, e.g. a child, a bishop, a pope of that century, a crowd member; for a feast of angels: the angel and the person they protect),
@@ -328,7 +349,7 @@ Respond ONLY with JSON: {"prompt": "the full updated prompt (90-140 words)", "sa
     const romanName = to === 'hi' ? 'Hinglish' : 'Pinglish';
     const out = await this.completeJson(`Translate this short video script into ${langNames[to]}.
 
-Rules: keep the SAME meaning, the same scene count and order, and about the same length per scene. Warm, simple, natural spoken language a beginner understands; no jargon. Write the saint's name and any foreign word in the target script (not Latin letters) so a voice pronounces it correctly (for English use normal spelling). No emojis in voiceover. NEVER add follow/subscribe/like/share text, @handles or URLs.${roman && to !== 'en' ? `\nAlso give "subtitle": the same voiceover written in ${romanName} (English letters, simple common spellings, no accents).` : ''}
+Rules: keep the SAME meaning, the same scene count and order, and about the same length per scene. Keep the inspiring, warm tone.\n${spokenStyle(to)}\nDo NOT translate word by word: say it the way people really talk in that language. Write the saint's name and any foreign word in the target script (not Latin letters) so a voice pronounces it correctly (for English use normal spelling). No emojis in voiceover. NEVER add follow/subscribe/like/share text, @handles or URLs.${roman && to !== 'en' ? `\nAlso give "subtitle": the same voiceover written in ${romanName} (English letters, simple common spellings, no accents).` : ''}
 "overlay" is a short on-screen title (max 6 words) or "" - translate it too. Caption: 200-300 characters, starts with an emoji, same content. Hashtags: 30 relevant hashtags in the target language.
 
 INPUT (JSON):
@@ -490,11 +511,13 @@ Respond ONLY with JSON: {"scenes": [{"voiceover": "...", "overlay": "..."${roman
       const scriptPrompt = `
 Write the script for a vertical video (Instagram Reel / YouTube Short) about "${saint.name}", about ${preset.approx}, exactly ${preset.scenes} scenes.
 
-AUDIENCE: everyone, including people who know nothing about the Church. Warm, clear, interesting. Short sentences. Explain any Church word the first time you use it, in plain words (see "terms"). No jargon, no preaching tone, no long lists of dates: use only the dates that make the story easier to follow.
+AUDIENCE: everyone: children, teenagers, adults, people who know nothing about the Church. Explain any Church word the first time you use it, in plain words (see "terms"). No jargon, no preaching tone, no long lists of dates: use only the dates that make the story easier to follow.
+${INSPIRING_BRIEF}
+${spokenStyle(targetLang)}
 STORYTELLING: open with the hook so people keep watching, then tell it as a story with a clear beginning, middle and end. Each scene reveals ONE new thing and flows into the next. Cover this arc in order: ${preset.arc}.
 INFORMATIVE: include the most important documented facts: who, when, where, what they did, why they are a saint, their patronage, and what the Church celebrates on their feast day. Skip trivial details. Every lesson is tied to a real event from their life.
 
-Language: "voiceover", "text_overlay", "caption" and "hashtags" MUST be in ${langLabel}. "visual" MUST be in English.
+Language: "voiceover", "text_overlay", "caption" and "hashtags" MUST be in ${langLabel} (obeying the spoken-style rules above). "visual" MUST be in English.
 text_overlay: a short title or key phrase (max 6 words) or "". NEVER account names, @handles, URLs, hashtags, or follow/subscribe/like/share text anywhere.
 voiceover: ${preset.words[0]}-${preset.words[1]} spoken words per scene, natural sentences exactly as a warm storyteller would SAY them. Write the saint's name and any foreign word in the target script (not Latin letters) so the voice pronounces it correctly. No emojis, symbols or hashtags. The last scene is a short prayer or closing thought - NEVER a call to follow, subscribe, like or share.
 visual: a concrete scene (place, action, light) that shows what the narration says; no text, letters or logos.
