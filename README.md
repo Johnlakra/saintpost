@@ -147,4 +147,15 @@ Setup: sign up at dash.cloudflare.com, open **AI > Workers AI > Use REST API**, 
 2. **Checker** audits each prompt against a physical-logic rulebook (`VISUAL_RULES` in `llmService.ts`: wings only on the angel and never through a person, hands hidden or simple, no overlapping bodies, exact counts, no text) and rewrites risky ones. It also writes a simpler *safe* composition and a must-include checklist.
 3. **Inspector** (`imageQA.ts`) looks at every generated picture with a vision model. On a clear defect it redraws: attempt 2 adds the inspector's fix, attempt 3 uses the safe composition. Anything still flawed is flagged and the video is not auto-published.
 
-Settings: `IMAGE_QA`, `IMAGE_QA_RETRIES`, `GEMINI_VISION_MODEL`, `IMAGE_QA_MODEL`. Each redraw spends one more image from the provider budget. Vision models are imperfect at counting fingers, so this reduces flaws but cannot guarantee none; the prompt rules do most of the work.
+Settings: `IMAGE_QA`, `IMAGE_QA_RETRIES`, `IMAGE_QA_MODE`, `IMAGE_CONCURRENCY`, `GEMINI_VISION_MODEL`, `IMAGE_QA_MODEL`. Each redraw spends one more image from the provider budget. Vision models are imperfect at counting fingers, so this reduces flaws but cannot guarantee none; the prompt rules do most of the work.
+
+
+## AI usage (what each video costs)
+
+LLM calls per video (DeepSeek via OpenRouter): **first time for a saint 4, repeats 3** (was 7):
+
+1. `getDossier` (once per saint, cached in the `saints` row): language-neutral fact sheet + casting sheet from the long source text.
+2. Script + caption + hashtags + Hinglish/Pinglish subtitles in **one** call, built from the compact fact sheet.
+3. Image director, 4. prompt checker: both read the compact fact sheet, not the full biography.
+
+Images: one per scene plus the cover. The inspector looks only at the cover and scenes rated medium/high risk, pictures are painted two at a time, narration is recorded while pictures are painted, the face reference is applied only to scenes where the saint is actually shown, and Gemini/OpenRouter model names are discovered from the API instead of hard-coded.

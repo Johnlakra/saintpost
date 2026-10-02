@@ -7,6 +7,7 @@ import * as googleTTS from 'google-tts-api';
 import { config } from '../config/env.js';
 import { ffmpeg, probeDuration } from '../utils/media.js';
 import os from 'os';
+import { geminiModelCandidates, forgetGeminiModels } from '../providers/geminiModels.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -131,7 +132,7 @@ export class TTSService {
   /** Gemini speech models speak Hindi and Punjabi (language is auto-detected from the script). */
   private async geminiTts(text: string, lang: Lang, file: string): Promise<void> {
     const langName = { hi: 'Hindi', pa: 'Punjabi', en: 'English' }[lang];
-    const models = [...new Set([this.geminiModelOk, process.env.GEMINI_TTS_MODEL, 'gemini-2.5-flash-preview-tts', 'gemini-2.5-flash-tts'].filter(Boolean) as string[])];
+    const models = [...new Set([this.geminiModelOk, ...(await geminiModelCandidates('tts'))].filter(Boolean) as string[])];
     let last: any;
     for (const model of models) {
       try {
@@ -155,6 +156,7 @@ export class TTSService {
         return;
       } catch (e: any) {
         last = e;
+        if (e.response?.status === 404) forgetGeminiModels();
         if (e.response?.status !== 404 && e.response?.status !== 400) break; // quota/auth: other model names won't help
       }
     }

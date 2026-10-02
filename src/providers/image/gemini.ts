@@ -2,6 +2,7 @@ import axios from 'axios';
 import fs from 'fs';
 import { config } from '../../config/env.js';
 import type { ImageProvider } from '../types.js';
+import { geminiModelCandidates, forgetGeminiModels } from '../geminiModels.js';
 
 /** Gemini image model: text-to-image, or reference-conditioned when a face reference is supplied. */
 export const geminiImage: ImageProvider = {
@@ -17,12 +18,23 @@ export const geminiImage: ImageProvider = {
       parts.push({ inline_data: { mime_type: mime, data: Buffer.from(ref.data).toString('base64') } });
     }
     parts.push({ text: prompt });
-    const model = process.env.GEMINI_IMAGE_MODEL || 'gemini-2.5-flash-image';
-    const res = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
-      { contents: [{ parts }], generationConfig: { responseModalities: ['IMAGE'], imageConfig: { aspectRatio: shape.aspect } } },
-      { headers: { 'x-goog-api-key': config.geminiApiKey }, timeout: 120000 }
-    );
+    let res: any;
+    let last: any;
+    for (const model of await geminiModelCandidates('image')) {
+      try {
+        res = await axios.post(
+          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+          { contents: [{ parts }], generationConfig: { responseModalities: ['IMAGE'], imageConfig: { aspectRatio: shape.aspect } } },
+          { headers: { 'x-goog-api-key': config.geminiApiKey }, timeout: 120000 }
+        );
+        break;
+      } catch (e: any) {
+        last = e;
+        if (e.response?.status !== 404) throw e;
+        forgetGeminiModels();
+      }
+    }
+    if (!res) throw last;
     const out: any[] = res.data?.candidates?.[0]?.content?.parts || [];
     const img = out.find(p => (p.inlineData || p.inline_data)?.data);
     const b64 = (img?.inlineData || img?.inline_data)?.data;
