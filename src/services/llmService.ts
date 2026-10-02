@@ -4,7 +4,36 @@ import { SaintRecord } from '../data/sanctusFetcher.js';
 import { romanizeFallback } from '../utils/romanize.js';
 import { LENGTHS, LengthPreset, DEFAULT_LENGTH } from '../config/lengths.js';
 
+/** One image prompt plus what the image inspector should verify. */
+export interface ScenePrompt {
+  prompt: string;
+  /** simpler, lower-risk composition used when retries keep failing */
+  safe: string;
+  /** things that must be visible for the image to match the narration */
+  mustInclude: string[];
+  people?: number;
+  risk: 'low' | 'medium' | 'high';
+  problems: string[];
+}
+export interface VisualBrief { cover: ScenePrompt; scenes: ScenePrompt[] }
+
+/** The physical-logic / anatomy rulebook shared by the prompt director and the prompt checker. */
+export const VISUAL_RULES = `VISUAL LOGIC RULES (apply to every prompt):
+1. ONE clear subject. At most 3 figures per picture; state the exact number ("exactly one person", "exactly two figures"). Avoid crowds.
+2. Never let bodies overlap or intersect: every figure has clear empty space around it. Nobody stands inside, behind-through or fused with another figure. Write explicit positions ("the child on the left, the angel one step behind and above, with a visible gap between them").
+3. ANGELS: exactly two wings, attached to the angel's own shoulder blades, spread outward BEHIND that angel only. The wings never cross, touch or pass through any human or other object. A guardian angel stands or hovers behind and slightly above the person it protects, with clear air between the wings and the person.
+4. HANDS: hide them or keep them simple. Prefer hands clasped in prayer in front of the chest, tucked into sleeves, resting at the sides out of frame, or holding one simple object with both hands. Never close-ups of hands, never interlaced fingers, never hands overlapping faces or other hands. When hands are visible write "two hands, five fingers each, natural proportions".
+5. Each figure: exactly one head, two arms, two legs (when visible), natural proportions, a calm clear face turned toward the camera or in three-quarter view, large enough in the frame (at least one third of the picture height) to be drawn well.
+6. Objects must be physically supported (on a table, the ground, in a hand). Nothing floats except light, clouds and celestial beings, and those are described explicitly.
+7. Show the narration LITERALLY and only that: the subject named in the narration must be visible and recognisable; do not add unrelated people, symbols or events.
+8. Period accuracy for architecture, clothing, tools and technology; no halos, crosses, rosaries or religious garments unless documented.
+9. Consistent light: one light direction, shadows that match it. Consistent scale and perspective.
+10. No text, letters, captions, signs with writing, logos or watermarks.
+11. Use positive wording only (say what IS there). Do not write negations such as "no extra fingers": the generator ignores them.`;
+
 export interface SceneScript {
+  safe_prompt?: string; // simpler fallback prompt (see ScenePrompt.safe)
+  must_include?: string[]; // checklist the image inspector verifies
   subtitle?: string; // Roman-script (Hinglish/Pinglish) version of the voiceover for on-screen subtitles
   image_prompt?: string; // detailed, fact-grounded prompt for the image model
   scene_number: number;
@@ -96,48 +125,91 @@ Respond ONLY with JSON: {"appearance": "one sentence, max 40 words, starting wit
 
 
   /**
-   * Builds rich, fact-grounded prompts for the image model from everything we know about the saint
-   * and the day's feast. Returns one prompt per scene plus one for the cover.
+   * Two-stage "director + checker" for image prompts.
+   *  1) DIRECTOR writes a detailed, fact-grounded prompt per scene (what to show, exactly where, from which angle).
+   *  2) CHECKER audits every prompt against a physical-logic / anatomy rulebook and rewrites the ones that could
+   *     produce impossible pictures (wings through bodies, extra hands, merged figures), and adds a "safe" fallback
+   *     composition plus a checklist (must_include) that the image inspector later verifies.
    */
   async buildVisualBrief(
     saint: SaintRecord,
     scenes: SceneScript[],
     feast: { dateLabel: string; rank?: string; color?: string; martyrology?: string }
-  ): Promise<{ cover: string; scenes: string[] } | null> {
+  ): Promise<VisualBrief | null> {
     if (config.dryRun || !this.openrouterApiKey) return null;
     try {
-      const out = await this.completeJson(`You are an art director writing prompts for an image generator (FLUX). Make each prompt richly detailed but strictly faithful to documented history.
-
-SAINT DOSSIER
+      const dossier = `SUBJECT DOSSIER
 Name: ${saint.name}
 Feast: ${feast.dateLabel}${feast.rank ? `, ${feast.rank}` : ''}${feast.color ? `, liturgical colour ${feast.color}` : ''}
 Patronage: ${saint.patronage || 'n/a'}
 Era: ${saint.era || 'n/a'}   Region: ${saint.region || 'n/a'}
-Fixed appearance (copy verbatim whenever the saint appears): ${saint.appearance || 'n/a'}
+Fixed appearance of the saint (copy verbatim whenever the saint appears; if the subject is not a single person, e.g. a feast of the Angels, there is no fixed person): ${saint.appearance || 'n/a'}
 Roman Martyrology entry for the day: ${(feast.martyrology || '').slice(0, 1200) || 'n/a'}
 Documented biography:
-${(saint.facts || saint.short_description || '').slice(0, 7000)}
+${(saint.facts || saint.short_description || '').slice(0, 6000)}`;
+
+      const sceneList = JSON.stringify(scenes.map((sc, i) => ({ n: i + 1, narration: sc.voiceover, rough_visual: sc.visual })));
+
+      // ---- Stage 1: DIRECTOR
+      const draft = await this.completeJson(`You are an art director writing prompts for an image generator (FLUX). Each prompt must produce a physically logical, clearly composed picture that illustrates exactly what the narration says.
+
+${dossier}
 
 SCENES (narration + rough visual):
-${JSON.stringify(scenes.map((sc, i) => ({ n: i + 1, narration: sc.voiceover, rough_visual: sc.visual })))}
+${sceneList}
 
-For each scene write ONE image prompt of 70-110 English words covering: who is in frame (saint with the fixed appearance, plus other people only if the biography mentions them), the exact action, the real place and its period-accurate architecture/landscape/objects/clothing, time of day and weather, light direction and colour palette, camera framing (vertical 9:16, shot type, lens, depth of field), and mood.
-Hard rules:
-- Depict only what the documented biography supports. No invented events, miracles, dialogue, relatives, symbols, halos, crosses, rosaries or religious garments unless documented.
-- Period accuracy: architecture, tools, vehicles, technology, fabrics and hairstyles must match the year and country of that moment.
-- No text, letters, captions, logos, signs with writing, or watermarks in the image.
-- The saint must look identical in every scene (same age, face, hair, clothing style) - if the scene is an illness or death scene keep the same young or old age as documented.
-Also write one "cover" prompt (square 1:1, head-and-shoulders portrait of the saint in a setting that reflects their life, calm and dignified) in the same style.
+${VISUAL_RULES}
+
+For each scene write ONE prompt of 90-140 English words in this order: (1) shot type and camera angle, (2) EXACTLY who is in frame and how many people, (3) a spatial layout sentence: foreground / midground / background and left / right positions of every figure and object, (4) the action in one simple pose per figure, (5) the real place and its period-accurate architecture, objects and clothing, (6) time of day, light direction, colour palette and mood.
+Also write one "cover" prompt (square 1:1, a calm, dignified head-and-shoulders portrait of the saint, or the central subject of the feast, in a setting that reflects their life) following the same rules.
 
 Respond ONLY with JSON: {"cover": "...", "scenes": ["prompt for scene 1", "..."]} with exactly ${scenes.length} scene prompts.`, 0.3);
-      if (!out?.cover || !Array.isArray(out.scenes) || out.scenes.length !== scenes.length) throw new Error('unexpected shape');
-      return { cover: String(out.cover), scenes: out.scenes.map(String) };
+      if (!draft?.cover || !Array.isArray(draft.scenes) || draft.scenes.length !== scenes.length) throw new Error('director returned an unexpected shape');
+
+      // ---- Stage 2: CHECKER
+      try {
+        const audit = await this.completeJson(`You are a strict quality checker for AI image prompts. Image generators often draw impossible things: wings or limbs passing through another body, merged figures, extra hands or fingers, floating objects, wrong counts, unclear scenes. Audit each prompt below and fix it so the picture will be logical and unambiguous.
+
+${VISUAL_RULES}
+
+For EACH item decide:
+- "problems": what could go wrong or is not relevant to the narration (empty array if none).
+- "prompt": the corrected, final prompt (keep it 90-140 words, same structure: shot, who and how many, spatial layout, action, place, light). Apply every rule. Rewrite poses so hands are hidden or simple.
+- "safe_prompt": a SIMPLER composition that conveys the same idea with the lowest risk of errors: a single main figure (or a single subject), three-quarter or back view or medium shot, hands hidden or clasped, no overlapping bodies, plain uncluttered background. 50-90 words.
+- "must_include": 2 to 4 short phrases naming things that MUST be visible for the picture to match the narration (e.g. "angel behind the child", "two wings attached to the angel's back").
+- "people": the exact number of human or angelic figures in the picture.
+- "risk": "low" | "medium" | "high" chance of anatomy or logic errors.
+
+NARRATION AND DRAFT PROMPTS (item 0 is the cover):
+${JSON.stringify([{ i: 0, narration: 'cover portrait', prompt: draft.cover }, ...draft.scenes.map((p: string, i: number) => ({ i: i + 1, narration: scenes[i].voiceover, prompt: p }))])}
+
+${dossier.slice(0, 2500)}
+
+Respond ONLY with JSON: {"items": [ {"i": 0, "problems": [], "prompt": "...", "safe_prompt": "...", "must_include": ["..."], "people": 1, "risk": "low"}, ... ]} with exactly ${scenes.length + 1} items in order.`, 0.2);
+        const items: any[] = audit?.items;
+        if (!Array.isArray(items) || items.length !== scenes.length + 1) throw new Error('checker returned an unexpected shape');
+        const toPrompt = (it: any, fallback: string): ScenePrompt => ({
+          prompt: String(it?.prompt || fallback),
+          safe: String(it?.safe_prompt || ''),
+          mustInclude: Array.isArray(it?.must_include) ? it.must_include.map(String).slice(0, 5) : [],
+          people: Number.isFinite(+it?.people) ? +it.people : undefined,
+          risk: ['low', 'medium', 'high'].includes(it?.risk) ? it.risk : 'medium',
+          problems: Array.isArray(it?.problems) ? it.problems.map(String) : [],
+        });
+        const fixed = items.map((it, k) => toPrompt(it, k === 0 ? String(draft.cover) : String(draft.scenes[k - 1])));
+        const nFixed = fixed.filter(f => f.problems.length).length;
+        console.log(`   🔎 Prompt checker: ${nFixed}/${fixed.length} prompts rewritten, ${fixed.filter(f => f.risk === 'high').length} high-risk`);
+        return { cover: fixed[0], scenes: fixed.slice(1) };
+      } catch (e: any) {
+        console.warn(`⚠️ Prompt checker failed (${e.message}); using the director's prompts as they are.`);
+        const plain = (p: string): ScenePrompt => ({ prompt: String(p), safe: '', mustInclude: [], risk: 'medium', problems: [] });
+        return { cover: plain(draft.cover), scenes: draft.scenes.map(plain) };
+      }
     } catch (e: any) {
       console.warn('⚠️ Visual brief failed, using basic scene visuals:', e.message);
       return null;
     }
   }
-
 
   /**
    * Hinglish / Pinglish subtitles: the SAME words as the Hindi / Punjabi narration, typed in English letters

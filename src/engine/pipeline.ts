@@ -42,6 +42,8 @@ export interface PipelineResult {
   notes: string[];
   sceneCount: number;
   animatedScenes: number;
+  /** image inspector summary: images checked / regenerated / still flawed */
+  qa: { checked: number; retried: number; flagged: string[] };
 }
 
 let pipelineBusy = false;
@@ -158,7 +160,14 @@ export class SaintPostPipeline {
       color: saint.liturgical_color,
       martyrology: (saint as any).source_text || saint.short_description,
     });
-    if (brief) content.video_script.forEach((sc, i) => { sc.image_prompt = brief.scenes[i]; });
+    if (brief) {
+      content.video_script.forEach((sc, i) => {
+        const b = brief.scenes[i];
+        sc.image_prompt = b.prompt;
+        sc.safe_prompt = b.safe || undefined;
+        sc.must_include = b.mustInclude;
+      });
+    }
     console.log(`✅ Step 2b: Visual brief ${brief ? 'built for ' + brief.scenes.length + ' scenes' : 'skipped (using basic visuals)'}`);
 
     // STEP 3/4: cover first (it becomes the face anchor for every scene when no documented photo exists)
@@ -215,6 +224,8 @@ export class SaintPostPipeline {
         overlay: scenes[i].text_overlay || '',
       });
     }
+    const flagged = this.visualService.report.qa.flagged;
+    if (flagged.length) notes.push(`The image inspector still saw a visible flaw in: ${flagged.join(', ')} (after ${this.visualService.report.qa.retried} regeneration(s))`);
     if (reusedScenes.length) notes.push(`${reusedScenes.length} scene(s) reused an earlier image (${reusedScenes.join(', ')}) because the image services ran out of credit/quota`);
     console.log(`✅ Step 6: ${assemblyScenes.length} video clips generated`);
     progress('🎬 Assembling the final video...');
@@ -279,6 +290,7 @@ export class SaintPostPipeline {
       notes,
       sceneCount: assemblyScenes.length,
       animatedScenes,
+      qa: this.visualService.report.qa,
     };
   }
 }

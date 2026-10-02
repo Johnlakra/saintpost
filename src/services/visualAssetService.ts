@@ -3,7 +3,8 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { config } from '../config/env.js';
 import { SaintRecord } from '../data/sanctusFetcher.js';
-import { SceneScript } from './llmService.js';
+import { SceneScript, ScenePrompt } from './llmService.js';
+import { inspectImage, qaEnabled, qaRetries } from './imageQA.js';
 import { ffmpeg } from '../utils/media.js';
 import { generateImage, ImageProvidersExhausted } from '../providers/image/index.js';
 import type { Shape } from '../providers/types.js';
@@ -37,13 +38,25 @@ export interface VisualReport {
   reused: number[];
   /** images by provider label */
   byProvider: Record<string, number>;
+  /** quality inspector: images inspected, regenerated, and any still flawed after all attempts */
+  qa: { checked: number; retried: number; flagged: string[]; engine?: string };
+}
+const emptyReport = (): VisualReport => ({ reused: [], byProvider: {}, qa: { checked: 0, retried: 0, flagged: [] } });
+
+/** What the image should show; used by the inspector and to build retry prompts. */
+interface QASpec {
+  label: string; // "cover" | "scene 3"
+  expect: string; // narration / description
+  mustInclude: string[];
+  people?: number;
+  safePrompt?: string; // simpler composition for the last attempt
 }
 
 export class VisualAssetService {
   private outputDir: string;
   /** In-run face anchor: when no documented photo exists, the first cover image is the reference for every scene. */
   private anchor: { url: string; path: string } | null = null;
-  report: VisualReport = { reused: [], byProvider: {} };
+  report: VisualReport = emptyReport();
 
   constructor() {
     this.outputDir = path.join(__dirname, '..', '..', 'public', 'assets');
@@ -80,15 +93,20 @@ export class VisualAssetService {
     return this.makeImage('character_sheet', saint, prompt, SHAPES.sheet, this.seedFor(saint));
   }
 
-  async generateCoverImage(saint: SaintRecord, _characterSheetUrl?: string, detailedPrompt?: string): Promise<ImageAssetResult> {
+  async generateCoverImage(saint: SaintRecord, _characterSheetUrl?: string, brief?: ScenePrompt): Promise<ImageAssetResult> {
     this.anchor = null;
-    this.report = { reused: [], byProvider: {} };
+    this.report = emptyReport();
     console.log(`🖼️ Generating 1:1 Cover Image for ${saint.name}...`);
-    const prompt = detailedPrompt
-      ? `${this.characterDescriptor(saint)}. ${detailedPrompt}. ${this.styleFor(saint)}`
+    const wrap = (body: string) => `${this.characterDescriptor(saint)}. ${body}. ${this.styleFor(saint)}`;
+    const prompt = brief?.prompt
+      ? wrap(brief.prompt)
       : `Square devotional portrait, head and shoulders, calm dignified expression, centered with space around. ${this.characterDescriptor(saint)}. ${this.styleFor(saint)}`;
+    const qa: QASpec = {
+      label: 'cover', expect: brief?.prompt || `a calm head-and-shoulders portrait of ${saint.name}`,
+      mustInclude: brief?.mustInclude || [], people: brief?.people, safePrompt: brief?.safe ? wrap(brief.safe) : undefined,
+    };
     try {
-      return await this.makeImage('cover', saint, prompt, SHAPES.square, this.seedFor(saint));
+      return await this.makeImage('cover', saint, prompt, SHAPES.square, this.seedFor(saint), qa);
     } catch (e: any) {
       if (e instanceof ImageProvidersExhausted) {
         throw new Error(`No good image provider is available right now (credits/quota used up), so I did not build a low-quality video. Details: ${e.failures.slice(0, 4).join(' | ')}`);
@@ -105,9 +123,14 @@ export class VisualAssetService {
     for (let i = 0; i < scenes.length; i++) {
       const scene = scenes[i];
       console.log(`   └ Generating scene ${i + 1}/${scenes.length}...`);
-      const prompt = `Main figure: ${this.characterDescriptor(saint)}. Scene: ${scene.image_prompt || scene.visual}. The main figure must match that description exactly in every scene. Vertical cinematic composition, subject in the middle third. ${this.styleFor(saint)}`;
+      const wrap = (body: string) => `Main figure: ${this.characterDescriptor(saint)}. Scene: ${body}. The main figure must match that description exactly in every scene. Vertical cinematic composition, subject in the middle third. ${this.styleFor(saint)}`;
+      const prompt = wrap(scene.image_prompt || scene.visual);
+      const qa: QASpec = {
+        label: `scene ${i + 1}`, expect: `${scene.image_prompt || scene.visual} (narration: ${scene.voiceover})`.slice(0, 900),
+        mustInclude: scene.must_include || [], safePrompt: scene.safe_prompt ? wrap(scene.safe_prompt) : undefined,
+      };
       try {
-        results.push(await this.makeImage(`scene_${i + 1}`, saint, prompt, SHAPES.story, seed + i));
+        results.push(await this.makeImage(`scene_${i + 1}`, saint, prompt, SHAPES.story, seed + i, qa));
       } catch (err: any) {
         if (!(err instanceof ImageProvidersExhausted)) throw err;
         // Never ship a low-quality image: reuse an earlier GOOD one (the video gets a different move/crop) and flag it.
@@ -121,8 +144,48 @@ export class VisualAssetService {
     return results;
   }
 
-  private async makeImage(kind: string, saint: SaintRecord, prompt: string, shape: Shape, seed: number): Promise<ImageAssetResult> {
-    const fileName = `${kind}_${slug(saint.name)}_${Date.now()}.png`;
+  /**
+   * Generate one image, then INSPECT it. If the inspector finds a clear defect (extra hands, wings through a body,
+   * merged figures, melted face, stray text, wrong subject) it regenerates: attempt 2 = same scene, new seed, with the
+   * inspector's fix instruction; attempt 3 = the simpler "safe" composition. The best attempt wins; anything still
+   * flawed is flagged so the video is not auto-published. The inspector is fail-open (no inspector = accept).
+   */
+  private async makeImage(kind: string, saint: SaintRecord, prompt: string, shape: Shape, seed: number, qa?: QASpec): Promise<ImageAssetResult> {
+    if (!qa || !qaEnabled()) return this.renderOnce(kind, saint, prompt, shape, seed);
+
+    const attempts = 1 + qaRetries();
+    let fixHint = '';
+    let best: { res: ImageAssetResult; issues: string[] } | null = null;
+    for (let a = 0; a < attempts; a++) {
+      const last = a === attempts - 1 && attempts > 1;
+      const text = last && qa.safePrompt ? qa.safePrompt : fixHint ? `${prompt} Important corrections: ${fixHint}` : prompt;
+      let res: ImageAssetResult;
+      try {
+        res = await this.renderOnce(kind, saint, text, shape, seed + a * 1000);
+      } catch (e: any) {
+        if (best) { console.warn(`     ⚠️ ${qa.label}: could not regenerate (${e.message.slice(0, 80)}); keeping the best earlier attempt.`); break; }
+        throw e;
+      }
+      const verdict = await inspectImage(res.localPath, qa.expect, qa.mustInclude, qa.people);
+      if (verdict.checked) {
+        this.report.qa.checked++;
+        this.report.qa.engine = verdict.engine;
+      }
+      if (!verdict.checked || verdict.pass) {
+        if (verdict.checked) console.log(`     🔎 ${qa.label}: inspector OK${a ? ` (attempt ${a + 1})` : ''}`);
+        return res;
+      }
+      console.warn(`     🔎 ${qa.label}: inspector found problems: ${verdict.issues.join('; ') || 'unspecified'}${a < attempts - 1 ? ' -> regenerating' : ''}`);
+      if (!best || verdict.issues.length < best.issues.length) best = { res, issues: verdict.issues };
+      this.report.qa.retried++;
+      fixHint = verdict.fix || verdict.issues.join('; ');
+    }
+    this.report.qa.flagged.push(qa.label);
+    return best!.res;
+  }
+
+  private async renderOnce(kind: string, saint: SaintRecord, prompt: string, shape: Shape, seed: number): Promise<ImageAssetResult> {
+    const fileName = `${kind}_${slug(saint.name)}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}.png`;
     const localPath = path.join(this.outputDir, fileName);
     const documented = saint.reference_image_url;
     const refUrl = documented || (kind !== 'cover' ? this.anchor?.url : undefined);
