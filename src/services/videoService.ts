@@ -35,7 +35,7 @@ export class VideoService {
     durationSec: number,
     sceneNum: number,
     opts: { animate?: boolean; imageUrl?: string; prompt?: string } = {}
-  ): Promise<{ path: string; animated: boolean }> {
+  ): Promise<{ path: string; animated: boolean; raw?: Buffer }> {
     if (opts.animate && opts.imageUrl) {
       try {
         const out = await generateVideo({ imageUrl: opts.imageUrl, imagePath, prompt: opts.prompt || '', durationSec });
@@ -45,7 +45,7 @@ export class VideoService {
           try {
             const fitted = await this.fitClip(raw, durationSec, sceneNum);
             console.log(`   🎞️ Scene ${sceneNum}: animated by ${out.provider.label}`);
-            return { path: fitted, animated: true };
+            return { path: fitted, animated: true, raw: out.buffer };
           } finally {
             fs.rmSync(raw, { force: true });
           }

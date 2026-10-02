@@ -9,25 +9,14 @@ import { imageProviderStatus, cloudflareBudget, cloudflareVideosLeft, testImageP
 import { getPending, setPending, clearPending } from './state.js';
 import { registerWatermarkMenu, handleLogoUpload, handleWatermarkText } from './watermarkMenu.js';
 
-type Lang = 'hi' | 'pa' | 'en';
-const LANG_LABEL: Record<Lang, string> = { hi: '🇮🇳 हिंदी', pa: '🇮🇳 ਪੰਜਾਬੀ', en: '🇬🇧 English' };
+import { Lang, LANG_LABEL, getPreview, sendPreview } from './present.js';
+import { registerEditMenu, handleEditText } from './editMenu.js';
 
 const pipeline = new SaintPostPipeline();
 const fetcher = new SaintFetcherService();
 
 const pending = { get: getPending, set: setPending, delete: clearPending };
 export { clearPending };
-
-/** Last previews awaiting Publish/Regenerate (in memory; lost on restart). */
-interface Preview { saint: SaintRecord; lang: Lang; payload: PostPayloadData; dateMode: boolean }
-const previews = new Map<string, Preview>();
-let previewSeq = 0;
-function rememberPreview(p: Preview): string {
-  const id = String(++previewSeq);
-  previews.set(id, p);
-  if (previews.size > 20) previews.delete(previews.keys().next().value as string);
-  return id;
-}
 
 const uid = (ctx: Context) => String(ctx.from?.id ?? '');
 
@@ -88,7 +77,8 @@ async function mainKeyboard(userId: string) {
     [Markup.button.callback('📅 Feast by Date', 'm:date'), Markup.button.callback('🖼 Face Photo', 'm:ref')],
     [Markup.button.callback(`🌐 Language: ${LANG_LABEL[lang]}`, 'm:lang'), Markup.button.callback('📱 Accounts', 'm:acc')],
     [Markup.button.callback(`🎞 Length: ${LENGTHS[length].label} (${LENGTHS[length].approx})`, 'm:len'), Markup.button.callback('💧 Watermark', 'm:wm')],
-    [Markup.button.callback('📊 Status', 'm:status'), Markup.button.callback('❓ Help', 'm:help')],
+    [Markup.button.callback('📂 My videos (edit)', 'm:vids'), Markup.button.callback('📊 Status', 'm:status')],
+    [Markup.button.callback('❓ Help', 'm:help')],
   ]);
 }
 const backRow = [Markup.button.callback('⬅️ Menu', 'm:main')];
@@ -100,6 +90,7 @@ const MENU_TEXT =
   '📅 *Feast by Date* — the saint for any day (e.g. 13/06)\n' +
   '🖼 *Face Photo* — set a documented photo so the face is accurate\n' +
   '💧 *Watermark* — your logo/text on every video, movable any time\n' +
+  '📂 *My videos* — edit a finished video: only what you change is redone\n' +
   'Videos are *previews first*; you publish with one tap.';
 
 export async function showMainMenu(ctx: Context, edit = false) {
@@ -128,28 +119,9 @@ export async function runAndPresent(ctx: Context, saintInput: SaintRecord | stri
     const result: PipelineResult = await pipeline.runPipelineForSaint(saintInput, lang, { publish: false, onProgress: update, length });
     await update(`✅ Done: ${result.saint.name}`);
 
-    const id = rememberPreview({ saint: result.saint, lang, payload: result.payload, dateMode });
     const caption =
       `🎬 ${result.saint.name} [${lang.toUpperCase()}]\n\n${result.content.caption}\n\n${result.content.hashtags}`.slice(0, 1000);
-    const kb = Markup.inlineKeyboard([
-      [Markup.button.callback('📤 Publish to all accounts', `pub:${id}`)],
-      [Markup.button.callback('🔁 Regenerate', `regen:${id}`)],
-      [
-        ...(['hi', 'pa', 'en'] as Lang[]).filter(l => l !== lang).map(l => Markup.button.callback(`🌐 ${LANG_LABEL[l]}`, `lang2:${id}:${l}`)),
-      ],
-      backRow,
-    ]);
-
-    let sentVideo = false;
-    try {
-      await ctx.replyWithVideo({ url: result.finalVideoUrl }, { caption, ...kb, supports_streaming: true });
-      sentVideo = true;
-    } catch (e: any) {
-      console.warn('⚠️ Could not attach video to Telegram (sending link instead):', e.message);
-    }
-    if (!sentVideo) {
-      await ctx.reply(`${caption}\n\n▶️ ${result.finalVideoUrl}`, kb);
-    }
+    await sendPreview(ctx, { saint: result.saint, lang, payload: result.payload, dateMode, projectId: result.projectId }, result.finalVideoUrl, caption);
     await ctx.reply(
       `🖼 Cover: ${result.coverImageUrl}\n` +
       `🧑 Face reference: ${result.referenceImageUrl || 'none (tap 🖼 Face Photo in the menu to add one)'}\n` +
@@ -175,6 +147,7 @@ function parseDate(text: string): Date | null {
 export function registerMenu(bot: Telegraf<Context>, auth: (ctx: Context, next: () => Promise<void>) => any) {
   bot.command('menu', auth, ctx => showMainMenu(ctx));
   registerWatermarkMenu(bot, auth);
+  registerEditMenu(bot, auth);
 
   bot.action('m:main', auth, async ctx => { await ctx.answerCbQuery(); pending.delete(uid(ctx)); await showMainMenu(ctx, true); });
 
@@ -314,7 +287,7 @@ export function registerMenu(bot: Telegraf<Context>, auth: (ctx: Context, next: 
 
   // Preview actions
   bot.action(/^pub:(\d+)$/, auth, async ctx => {
-    const p = previews.get(ctx.match[1]);
+    const p = getPreview(ctx.match[1]);
     if (!p) { await ctx.answerCbQuery('Preview expired — regenerate it.', { show_alert: true }); return; }
     await ctx.answerCbQuery('Publishing…');
     const r = await pipeline.publishPayload(p.payload);
@@ -326,13 +299,13 @@ export function registerMenu(bot: Telegraf<Context>, auth: (ctx: Context, next: 
     );
   });
   bot.action(/^regen:(\d+)$/, auth, async ctx => {
-    const p = previews.get(ctx.match[1]);
+    const p = getPreview(ctx.match[1]);
     if (!p) { await ctx.answerCbQuery('Preview expired.', { show_alert: true }); return; }
     await ctx.answerCbQuery('Regenerating…');
     await runAndPresent(ctx, p.saint, p.lang, p.dateMode);
   });
   bot.action(/^lang2:(\d+):(hi|pa|en)$/, auth, async ctx => {
-    const p = previews.get(ctx.match[1]);
+    const p = getPreview(ctx.match[1]);
     if (!p) { await ctx.answerCbQuery('Preview expired.', { show_alert: true }); return; }
     await ctx.answerCbQuery('Making that version…');
     await runAndPresent(ctx, p.saint, ctx.match[2] as Lang, p.dateMode);
@@ -379,6 +352,7 @@ export function registerMenu(bot: Telegraf<Context>, auth: (ctx: Context, next: 
     const st = pending.get(uid(ctx));
     if (!st) return next();
     if (await handleWatermarkText(ctx, st, text)) return;
+    if (await handleEditText(ctx, st, text)) return;
 
     if (st.kind === 'saint') {
       pending.delete(uid(ctx));

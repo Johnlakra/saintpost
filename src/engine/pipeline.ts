@@ -1,7 +1,9 @@
+import fs from 'fs';
 import { SaintFetcherService, SaintRecord } from '../data/sanctusFetcher.js';
 import { LLMService, GeneratedContent } from '../services/llmService.js';
 import { VisualAssetService } from '../services/visualAssetService.js';
 import { VideoService } from '../services/videoService.js';
+import { projectService, ProjectService, Manifest } from '../services/projectService.js';
 import { aiVideoAvailable } from '../providers/video/index.js';
 import { LENGTHS, LengthId, DEFAULT_LENGTH } from '../config/lengths.js';
 import { TTSService } from '../services/ttsService.js';
@@ -44,6 +46,8 @@ export interface PipelineResult {
   animatedScenes: number;
   /** image inspector summary: images checked / regenerated / still flawed */
   qa: { checked: number; retried: number; flagged: string[] };
+  /** saved copy of the script + pictures + narration, so the video can be edited without regenerating everything */
+  projectId?: number;
 }
 
 let pipelineBusy = false;
@@ -71,6 +75,20 @@ export class SaintPostPipeline {
   /**
    * Executes the complete 10-Step Automated Flow for a saint in Simple Hindi (Default), English, or Punjabi
    */
+  private async snapshotAssets(cover: string, scenes: string[], audios: string[], aiClips: Record<number, Buffer>) {
+    const cache = new Map<string, Buffer>(); // a reused image is converted once
+    const toJpeg = async (f: string) => {
+      if (!cache.has(f)) cache.set(f, await ProjectService.toJpeg(f));
+      return cache.get(f)!;
+    };
+    return {
+      cover: await toJpeg(cover),
+      scenes: await Promise.all(scenes.map(f => toJpeg(f))),
+      audios: audios.map(f => fs.readFileSync(f)),
+      aiClips,
+    };
+  }
+
   /** 'roman' (Hinglish/Pinglish) or 'native' subtitles for Hindi/Punjabi; admin-switchable from the bot menu. */
   async subtitleMode(): Promise<'roman' | 'native'> {
     try {
@@ -216,6 +234,7 @@ export class SaintPostPipeline {
     const maxAi = parseInt(process.env.VIDEO_AI_SCENES || '3', 10);
     let animatedScenes = 0;
     const assemblyScenes: AssemblyScene[] = [];
+    const aiRaw: Record<number, Buffer> = {};
     for (let i = 0; i < sceneAssets.length; i++) {
       const durationSec = Math.max(3, audios[i].durationSec + 0.5);
       const animate = animatedScenes < maxAi && !reusedScenes.includes(i + 1) && aiVideoAvailable();
@@ -224,7 +243,7 @@ export class SaintPostPipeline {
         imageUrl: sceneAssets[i].url,
         prompt: scenes[i].image_prompt || scenes[i].visual,
       });
-      if (clip.animated) animatedScenes++;
+      if (clip.animated) { animatedScenes++; if (clip.raw) aiRaw[i] = clip.raw; }
       assemblyScenes.push({
         clipPath: clip.path,
         audioPath: audios[i].audioPath,
@@ -241,11 +260,30 @@ export class SaintPostPipeline {
 
     // STEP 7: ASSEMBLE VIDEO (FFmpeg)
     const outputFileName = `saintpost_${saint.name.toLowerCase().replace(/[^a-z0-9]/g, '_')}_${targetLang}_${Date.now()}.mp4`;
+    // Snapshot the expensive assets BEFORE assembly deletes the temp audio/clips: they are what makes edits cheap.
+    const snapshot = await this.snapshotAssets(coverResult.localPath, sceneAssets.map(a => a.localPath), assemblyScenes.map(a => a.audioPath), aiRaw).catch((e: any) => {
+      console.warn('⚠️ Could not snapshot assets for editing:', e.message);
+      return null;
+    });
     const finalVideoUrl = await this.assemblyService.assembleFinalVideo({
       scenes: assemblyScenes,
       outputFileName,
     });
     console.log(`✅ Step 7: Final 9:16 MP4 Video Rendered -> ${finalVideoUrl}`);
+    let projectId: number | undefined;
+    if (snapshot) {
+      const manifest: Manifest = {
+        saint: { name: saint.name, feast_month: saint.feast_month, feast_day: saint.feast_day, appearance: saint.appearance, reference_image_url: saint.reference_image_url },
+        lang: targetLang, length: preset.id, romanSubs: wantRoman, version: 1,
+        scenes: scenes.map(sc => ({ voiceover: sc.voiceover, subtitle: sc.subtitle, overlay: sc.text_overlay || '', visual: sc.visual, image_prompt: sc.image_prompt, safe_prompt: sc.safe_prompt, must_include: sc.must_include, risk: sc.risk, uses_main: sc.uses_main })),
+        caption: content.caption, hashtags: content.hashtags,
+      };
+      projectId = await projectService.create(manifest, snapshot, finalVideoUrl, coverImageUrl).catch((e: any) => {
+        console.warn('⚠️ Could not save the editable project:', e.message);
+        return undefined;
+      });
+      if (projectId) console.log(`💾 Saved editable project #${projectId} (${scenes.length} scenes)`);
+    }
 
     // STEP 8: CAPTION & HASHTAG PREPARATION
     console.log(`✅ Step 8: Caption Prepared (${content.caption.length} chars, 30 hashtags in ${targetLang.toUpperCase()})`);
@@ -300,6 +338,7 @@ export class SaintPostPipeline {
       sceneCount: assemblyScenes.length,
       animatedScenes,
       qa: this.visualService.report.qa,
+      projectId,
     };
   }
 }

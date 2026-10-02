@@ -169,3 +169,12 @@ Every LLM call sets an explicit `max_tokens` (sized to the video length) and use
 ## Who appears in the pictures (cast, not "a saint figure")
 
 The cached fact sheet now includes `subject_type` (person / angels / group / mystery / object), a `cast` list (every person or being in the story with a distinct age, gender, hair and clothing for their real time and place) and, for non-person feasts, the generally accepted Catholic `iconography`. The script, the director and the checker all work from that cast, scenes about other people are drawn as those people, a feast that is not about one person gets no "main figure" and no face reference, and the inspector fails any picture that shows a Christ-like long-haired bearded robed figure when the story is not about Jesus. Fact sheets cached before this change are rebuilt once, automatically.
+
+
+## Editing a finished video (reuse, don't regenerate)
+
+Every video is saved as an editable **project** in Neon: the script, the cover, one JPEG per scene, the narration (MP3 per scene) and any AI motion clips (about 1-4 MB per project; only the newest `PROJECTS_KEEP`=10 are kept).
+
+Open it from the video's **✏️ Edit this video** button or **/menu -> 📂 My videos**. You can change, per scene: the picture (redraw as-is, or "redraw with my change" such as "make the angel younger"), the narration, the on-screen title, or delete the scene; plus the caption, or make **another language with the same pictures**. Changes are queued; **Apply** redoes only what changed (new pictures cost image credits, edited narration costs one TTS call, a changed picture request or narration costs one tiny LLM call), reuses everything else, re-assembles with the current watermark and saves a new version. "Re-render" with no edits simply re-applies the current watermark/subtitle settings.
+
+Already-published posts cannot be swapped by the Instagram/YouTube APIs: publish the edited version as a new post and remove the old one on the platform.

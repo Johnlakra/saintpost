@@ -175,6 +175,39 @@ export class VisualAssetService {
   }
 
   /**
+   * Redraw ONE scene for an existing project. The cover (when we have it) is the face anchor, exactly as in the
+   * original run, so the saint still looks the same. Returns a JPEG-ready PNG path.
+   */
+  async regenerateScene(
+    saint: SaintRecord,
+    scene: SceneScript,
+    index: number,
+    coverPath: string | undefined,
+    bump: number
+  ): Promise<ImageAssetResult> {
+    this.report = emptyReport();
+    this.anchor = null;
+    if (coverPath && saint.appearance && !saint.reference_image_url) {
+      // the anchor must also be reachable by URL for providers that cannot read our disk
+      const name = `anchor_${slug(saint.name)}_${Date.now()}.png`;
+      const dest = path.join(this.outputDir, name);
+      fs.copyFileSync(coverPath, dest);
+      this.anchor = { url: `${config.renderExternalUrl}/assets/${name}`, path: dest };
+    }
+    const desc = this.characterDescriptor(saint);
+    const wrap = (body: string) => `${desc ? `Main figure: ${desc}. ` : ''}Scene: ${body}. ${desc ? 'The main figure must match that description exactly in every scene. ' : ''}Vertical cinematic composition, subject in the middle third. ${this.styleFor(saint)}`;
+    const qa: QASpec = {
+      label: `scene ${index + 1}`,
+      subject: (scene.must_include?.length ? scene.must_include.join(', ') : scene.voiceover).slice(0, 300),
+      mustInclude: scene.must_include || [],
+      inspect: scene.risk !== 'low',
+      useRef: scene.uses_main !== false,
+      safePrompt: scene.safe_prompt ? wrap(scene.safe_prompt) : undefined,
+    };
+    return this.makeImage(`scene_${index + 1}`, saint, wrap(scene.image_prompt || scene.visual), SHAPES.story, this.seedFor(saint) + index + bump * 7919, qa);
+  }
+
+  /**
    * Generate one image, then INSPECT it. If the inspector finds a clear defect (extra hands, wings through a body,
    * merged figures, melted face, stray text, wrong subject) it regenerates: attempt 2 = same scene, new seed, with the
    * inspector's fix instruction; attempt 3 = the simpler "safe" composition. The best attempt wins; anything still

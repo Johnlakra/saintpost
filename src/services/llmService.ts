@@ -284,6 +284,66 @@ Respond ONLY with a JSON object: {"lines": [${scenes.length} strings in the same
     }
   }
 
+
+  /** Apply a free-text change request ("make the angel younger", "remove the crowd") to ONE scene's image prompt. */
+  async rewriteImagePrompt(
+    current: string,
+    instruction: string,
+    narration: string,
+    ctx: { appearance?: string; mustInclude?: string[] }
+  ): Promise<{ prompt: string; safe: string; mustInclude: string[] }> {
+    const out = await this.completeJson(`You edit one image prompt for an image generator (FLUX).
+
+CURRENT PROMPT:
+${current}
+
+NARRATION OF THIS SCENE (the picture must still illustrate it): ${narration}
+${ctx.appearance ? `FIXED APPEARANCE of the saint (keep it identical): ${ctx.appearance}` : ''}
+ADMIN'S CHANGE REQUEST: ${instruction}
+
+Apply the change request, keep everything else, and keep the prompt consistent with the rules below.
+
+${VISUAL_RULES}
+
+Respond ONLY with JSON: {"prompt": "the full updated prompt (90-140 words)", "safe_prompt": "a simpler low-risk composition of the same idea (50-90 words)", "must_include": ["2-4 things that must be visible"]}`, 0.3, 1200);
+    return { prompt: String(out.prompt || current), safe: String(out.safe_prompt || ''), mustInclude: Array.isArray(out.must_include) ? out.must_include.map(String) : ctx.mustInclude || [] };
+  }
+
+  /**
+   * Same video in another language WITHOUT re-making the pictures: translates narration, titles, caption and hashtags
+   * scene by scene (same scene count and order) in one call.
+   */
+  async translateScenes(
+    scenes: Array<{ voiceover: string; overlay: string }>,
+    caption: string,
+    hashtags: string,
+    to: 'hi' | 'pa' | 'en',
+    roman: boolean
+  ): Promise<{ scenes: Array<{ voiceover: string; overlay: string; subtitle?: string }>; caption: string; hashtags: string }> {
+    const langNames: Record<string, string> = {
+      hi: 'Simple, Everyday Conversational Hindi (Devanagari script)',
+      en: 'English',
+      pa: 'Punjabi (Gurmukhi script)',
+    };
+    const romanName = to === 'hi' ? 'Hinglish' : 'Pinglish';
+    const out = await this.completeJson(`Translate this short video script into ${langNames[to]}.
+
+Rules: keep the SAME meaning, the same scene count and order, and about the same length per scene. Warm, simple, natural spoken language a beginner understands; no jargon. Write the saint's name and any foreign word in the target script (not Latin letters) so a voice pronounces it correctly (for English use normal spelling). No emojis in voiceover. NEVER add follow/subscribe/like/share text, @handles or URLs.${roman && to !== 'en' ? `\nAlso give "subtitle": the same voiceover written in ${romanName} (English letters, simple common spellings, no accents).` : ''}
+"overlay" is a short on-screen title (max 6 words) or "" - translate it too. Caption: 200-300 characters, starts with an emoji, same content. Hashtags: 30 relevant hashtags in the target language.
+
+INPUT (JSON):
+${JSON.stringify({ scenes, caption, hashtags })}
+
+Respond ONLY with JSON: {"scenes": [{"voiceover": "...", "overlay": "..."${roman && to !== 'en' ? ', "subtitle": "..."' : ''}}], "caption": "...", "hashtags": "..."} with exactly ${scenes.length} scenes.`, 0.3, 700 + scenes.length * 340);
+    if (!Array.isArray(out?.scenes) || out.scenes.length !== scenes.length) throw new Error('translation returned the wrong number of scenes');
+    const cleaned = out.scenes.map((sc: any) => {
+      const tmp: SceneScript = { scene_number: 0, duration: 0, visual: '', voiceover: String(sc.voiceover || ''), text_overlay: String(sc.overlay || ''), subtitle: sc.subtitle ? String(sc.subtitle) : undefined };
+      LLMService.stripPromo(tmp);
+      return { voiceover: tmp.voiceover, overlay: tmp.text_overlay, subtitle: tmp.subtitle };
+    });
+    return { scenes: cleaned, caption: String(out.caption || caption), hashtags: String(out.hashtags || hashtags) };
+  }
+
   /** Belt and braces: never let follow/subscribe/@handle text reach the video, whatever the LLM wrote. */
   static stripPromo(sc: SceneScript): void {
     const promo = /@\w|https?:\/\/|www\.|\b(follow|subscribe|like and share|share this)\b|फॉलो|सब्सक्राइब|फ़ॉलो|ਫਾਲੋ|ਸਬਸਕ੍ਰਾਈਬ|ਫ਼ਾਲੋ/i;
