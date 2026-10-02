@@ -125,3 +125,17 @@ DRY_RUN=true node -e "import('./dist/engine/pipeline.js').then(m => new m.SaintP
 2. Use **Web Service** with build command `npm install && npm run build` and start command `npm start`.
 3. Set environment variables from `.env.example`.
 4. Set up keep-alive ping on [cron-job.org](https://cron-job.org) targeting `https://your-app.onrender.com/health` every 5 minutes.
+
+
+## Free daily image quota (Cloudflare Workers AI)
+
+Cloudflare gives every free account **10,000 neurons per day, renewing at 00:00 UTC, no credit card**. SaintPost uses it first:
+
+| Model | Neurons per 9:16 frame | Notes |
+|---|---|---|
+| FLUX.2 klein 4B | ~190 (with a reference photo) | width/height, reference images for consistent faces |
+| FLUX.1 schnell | ~70 | cheaper fallback, text only |
+
+That is roughly 8 Short, 5 Standard or 3 Long videos per day. The bot's **Status** and **Length** screens show an estimate of what is left.
+
+Setup: sign up at dash.cloudflare.com, open **AI > Workers AI > Use REST API**, copy the **Account ID**, click **Create a Workers AI API token**, then set `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` in Render. Verify with `npm run check:providers` or the bot's **Status > Test image providers** button.

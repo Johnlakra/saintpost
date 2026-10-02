@@ -22,7 +22,7 @@ export async function generateVideo(req: VideoRequest): Promise<{ buffer: Buffer
       recordFail(p.id, msg);
       console.warn(`     ✗ ${p.label}: ${msg}`);
       const c = classify(e, msg);
-      if (c.kind !== 'transient') cooldown(p.id, c.ms, c.kind === 'hard' ? 'credit/auth problem' : 'quota reached');
+      if (c.kind !== 'transient') cooldown(p.id, c.ms, c.kind === 'hard' ? 'credit/auth problem' : c.kind === 'outage' ? 'provider outage' : 'quota reached');
     }
   }
   return null;

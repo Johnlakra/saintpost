@@ -12,7 +12,8 @@
     "db:migrate": "npm run build && node dist/db/migrate.js",
     "db:seed": "npm run build && node dist/db/seed.js",
     "test:pipeline": "ts-node -e \"import { SaintPostPipeline } from './src/engine/pipeline.js'; new SaintPostPipeline().runPipelineForSaint('St. Francis of Assisi');\"",
-    "db:enrich": "npm run build && node dist/db/enrich.js"
+    "db:enrich": "npm run build && node dist/db/enrich.js",
+    "check:providers": "npm run build && node scripts/check-providers.mjs"
   },
   "keywords": [
     "telegram-bot",
