@@ -24,7 +24,7 @@ const SHAPES: Record<'square' | 'story' | 'sheet', Shape> = {
 };
 
 const STYLE =
-  'classical devotional oil painting, reverent, warm natural light, sharp focus, intricate fine detail, high resolution, painterly, dignified, ' +
+  'classical oil painting style illustration, warm natural light, sharp focus, intricate fine detail, high resolution, painterly, ' +
   'beautiful composition, no text, no letters, no watermark, no logo, anatomically correct hands and face';
 
 const STYLE_MODERN =
@@ -89,10 +89,9 @@ export class VisualAssetService {
    * This (plus a fixed seed) is what keeps the face/outfit stable with text-to-image models.
    */
   private characterDescriptor(saint: SaintRecord): string {
-    const halo = config.saintHalo ? ', a subtle thin golden halo' : ', no halo';
-    if (saint.appearance) return `${saint.appearance}${halo}`;
-    const where = [saint.region, saint.era].filter(Boolean).join(', ');
-    return `${saint.name}${where ? ` (${where})` : ''}, ordinary clothing accurate for their real time and place, no invented props${halo}`;
+    // A feast that is not about one person (angels, a mystery...) has no "main figure": the scene prompts name the cast.
+    if (!saint.appearance) return '';
+    return `${saint.appearance}${config.saintHalo ? ', a subtle thin golden halo' : ', no halo'}`;
   }
 
   /** Modern saints get a realistic illustration style, ancient ones a classical painting. */
@@ -111,10 +110,13 @@ export class VisualAssetService {
     this.anchor = null;
     this.report = emptyReport();
     console.log(`🖼️ Generating 1:1 Cover Image for ${saint.name}...`);
-    const wrap = (body: string) => `${this.characterDescriptor(saint)}. ${body}. ${this.styleFor(saint)}`;
+    const desc = this.characterDescriptor(saint);
+    const wrap = (body: string) => `${desc ? `${desc}. ` : ''}${body}. ${this.styleFor(saint)}`;
     const prompt = brief?.prompt
       ? wrap(brief.prompt)
-      : `Square devotional portrait, head and shoulders, calm dignified expression, centered with space around. ${this.characterDescriptor(saint)}. ${this.styleFor(saint)}`;
+      : desc
+        ? `Square portrait, head and shoulders, calm expression, centered with space around. ${desc}. ${this.styleFor(saint)}`
+        : `A clear scene about ${saint.name}, square composition. ${this.styleFor(saint)}`;
     const qa: QASpec = {
       label: 'cover', subject: `a calm portrait of ${saint.name}`,
       mustInclude: brief?.mustInclude || [], inspect: true, useRef: true, safePrompt: brief?.safe ? wrap(brief.safe) : undefined,
@@ -137,7 +139,8 @@ export class VisualAssetService {
 
     const settled = await pool(scenes, conc, async (scene, i) => {
       console.log(`   └ Generating scene ${i + 1}/${scenes.length}...`);
-      const wrap = (body: string) => `Main figure: ${this.characterDescriptor(saint)}. Scene: ${body}. The main figure must match that description exactly in every scene. Vertical cinematic composition, subject in the middle third. ${this.styleFor(saint)}`;
+      const desc = this.characterDescriptor(saint);
+      const wrap = (body: string) => `${desc ? `Main figure: ${desc}. ` : ''}Scene: ${body}. ${desc ? 'The main figure must match that description exactly in every scene. ' : ''}Vertical cinematic composition, subject in the middle third. ${this.styleFor(saint)}`;
       const prompt = wrap(scene.image_prompt || scene.visual);
       const qa: QASpec = {
         label: `scene ${i + 1}`,

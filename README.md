@@ -164,3 +164,8 @@ Images: one per scene plus the cover. The inspector looks only at the cover and 
 ## LLM reliability (OpenRouter)
 
 Every LLM call sets an explicit `max_tokens` (sized to the video length) and uses JSON mode when the model supports it. If OpenRouter says the balance can only afford N tokens, the call is retried with that smaller limit; a 402 rests the model for 10 minutes instead of banning it. Replies are parsed leniently (`jsonrepair`: trailing commas, comments, code fences) and retried once with a stricter instruction if still invalid. Keep a few dollars on the OpenRouter key: with `deepseek/deepseek-chat` a video uses roughly 10-20k tokens (check openrouter.ai for the current price).
+
+
+## Who appears in the pictures (cast, not "a saint figure")
+
+The cached fact sheet now includes `subject_type` (person / angels / group / mystery / object), a `cast` list (every person or being in the story with a distinct age, gender, hair and clothing for their real time and place) and, for non-person feasts, the generally accepted Catholic `iconography`. The script, the director and the checker all work from that cast, scenes about other people are drawn as those people, a feast that is not about one person gets no "main figure" and no face reference, and the inspector fails any picture that shows a Christ-like long-haired bearded robed figure when the story is not about Jesus. Fact sheets cached before this change are rebuilt once, automatically.

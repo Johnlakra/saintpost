@@ -32,7 +32,8 @@ MAJOR defects (fail only for these):
 - wings, limbs or objects passing THROUGH another person's body, or figures overlapping so they cannot be told apart;
 - a badly distorted or melted face;
 - readable text, letters or a watermark;
-- the main subject is clearly absent or wrong (e.g. a different kind of figure than the subject).
+- the main subject is clearly absent or wrong (e.g. a different kind of figure than the subject);
+- a figure that looks like the traditional depiction of Jesus Christ (long hair and beard, robe, serene gaze) when the subject is not Jesus.
 
 JSON only: {"pass": true|false, "severity": "none"|"minor"|"major", "issues": ["each major defect, briefly"], "fix": "one short instruction to avoid them next time, e.g. 'hide the hands; keep the angel clearly behind the girl with a gap'"}. pass=false only if severity is "major".`;
 

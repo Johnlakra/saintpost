@@ -14,9 +14,15 @@ export interface Dossier {
   what_we_learn: string[]; did_you_know: string;
   terms: Array<{ term: string; plain: string }>;
   appearance: string;
+  /** person = one saint; angels/group/mystery/object = the feast is about something else (e.g. the Holy Guardian Angels) */
+  subject_type: 'person' | 'angels' | 'group' | 'mystery' | 'object';
+  /** every person/being that appears in the story, each with a distinct look */
+  cast: Array<{ role: string; look: string }>;
+  /** generally accepted Catholic iconography for non-person subjects (empty for ordinary saints) */
+  iconography: string;
 }
 export function isDossier(d: any): d is Dossier {
-  return !!d && Array.isArray(d.what_we_learn) && d.what_we_learn.length >= 3 && typeof d.did_you_know === 'string' && !!d.who && typeof d.appearance === 'string';
+  return !!d && Array.isArray(d.what_we_learn) && d.what_we_learn.length >= 3 && typeof d.did_you_know === 'string' && !!d.who && typeof d.appearance === 'string' && Array.isArray(d.cast) && typeof d.subject_type === 'string';
 }
 
 /** One image prompt plus what the image inspector should verify. */
@@ -46,7 +52,8 @@ export const VISUAL_RULES = `VISUAL LOGIC RULES (apply to every prompt):
 8. Period accuracy for architecture, clothing, tools and technology; no halos, crosses, rosaries or religious garments unless documented.
 9. Consistent light: one light direction, shadows that match it. Consistent scale and perspective.
 10. No text, letters, captions, signs with writing, logos or watermarks.
-11. Use positive wording only (say what IS there). Do not write negations such as "no extra fingers": the generator ignores them.`;
+11. NEVER default to a Christ-like figure (long hair, beard, white or red robe, serene gaze). Show ONLY the cast of this story, each exactly as described in the CAST list (age, gender, hair, clothing), and make different people look clearly different. Jesus appears only when the narration is about Jesus.
+12. Use positive wording only (say what IS there). Do not write negations such as "no extra fingers": the generator ignores them.`;
 
 export interface SceneScript {
   safe_prompt?: string; // simpler fallback prompt (see ScenePrompt.safe)
@@ -147,9 +154,12 @@ Return JSON:
   "what_we_learn": ["exactly 3 practical lessons, each starts with a verb, max 15 words, each tied to a real event"],
   "did_you_know": "1 true, surprising, lesser-known fact from the SOURCE (1-2 simple sentences)",
   "terms": [ {"term": "a Church word a beginner may not know", "plain": "very short plain explanation"} ],
-  "appearance": "ONLY if the subject is one real person: one sentence (max 40 words) starting with apparent age and gender, then complexion, hair and everyday clothing correct for their real time and place. Age = the age they are best known at (the real age at death for saints who died young). Do NOT add a religious habit, robe, cassock, halo, cross, rosary, glasses or any accessory unless the SOURCE explicitly says they wore/used it. Never default to an old bearded man. Use \"\" if the subject is not one person (e.g. a feast of the Angels)."
+  "subject_type": "person" | "angels" | "group" | "mystery" | "object"   (person = the feast honours one real saint; angels = a feast of angels; group = several saints/martyrs; mystery/object = e.g. the Holy Cross, a title of Mary),
+  "cast": [ {"role": "who or what appears in the story", "look": "age, gender, complexion, hair and clothing, correct for their real time and place; every cast member must look CLEARLY DIFFERENT from the others in age/gender/hair/clothing"} ]   (3 to 6 entries: the saint, and everyone else the story needs, e.g. a child, a bishop, a pope of that century, a crowd member; for a feast of angels: the angel and the person they protect),
+  "iconography": "ONLY for angels/mystery/object/group: how Catholic art generally shows this subject in 2 plain sentences (e.g. a young adult angel in a plain white robe with two feathered wings standing behind and slightly above a child, no halo needed). \"\" for ordinary saints.",
+  "appearance": "ONLY if the subject is one real person: one sentence (max 40 words) starting with apparent age and gender, then complexion, hair and everyday clothing correct for their real time and place. Age = the age they are best known at (the real age at death for saints who died young). Do NOT add a religious habit, robe, cassock, halo, cross, rosary, glasses or any accessory unless the SOURCE explicitly says they wore/used it. Never default to an old bearded man. Use \"\" if the subject is not one person (e.g. a feast of the Angels). NEVER describe any cast member as Christ-like (long hair + beard + white robe) unless the subject is Jesus himself."
 }
-Respond ONLY with JSON.`, 0.2, 2400);
+Respond ONLY with JSON.`, 0.2, 3200);
     if (!isDossier(d)) throw new Error('LLM returned an incomplete fact sheet');
     this.dossiers.set(key, d);
     return d;
@@ -175,7 +185,9 @@ Name: ${saint.name}
 Feast: ${feast.dateLabel}${feast.rank ? `, ${feast.rank}` : ''}${feast.color ? `, liturgical colour ${feast.color}` : ''}
 Patronage: ${saint.patronage || 'n/a'}
 Era: ${saint.era || 'n/a'}   Region: ${saint.region || 'n/a'}
-Fixed appearance of the saint (copy verbatim whenever the saint appears; if the subject is not a single person, e.g. a feast of the Angels, there is no fixed person): ${saint.appearance || 'n/a'}
+Subject type: ${facts?.subject_type || 'person'}
+Fixed appearance of the saint (copy verbatim whenever the saint appears): ${saint.appearance || 'n/a (this feast is not about one person)'}
+CAST (the ONLY figures allowed; copy each look exactly; they must look clearly different from each other): ${facts ? JSON.stringify(facts.cast).slice(0, 1500) : 'n/a'}${facts?.iconography ? `\nIconography: ${facts.iconography}` : ''}
 Roman Martyrology entry for the day: ${(feast.martyrology || '').slice(0, 600) || 'n/a'}
 Documented facts (compact):
 ${facts ? JSON.stringify({ who: facts.who, timeline: facts.timeline, key_deeds: facts.key_deeds, struggles: facts.struggles, why_saint: facts.why_saint, feast: facts.feast_and_patronage }).slice(0, 3000) : (saint.facts || saint.short_description || '').slice(0, 3000)}`;
@@ -193,7 +205,7 @@ ${sceneList}
 ${VISUAL_RULES}
 
 For each scene write ONE prompt of 90-140 English words in this order: (1) shot type and camera angle, (2) EXACTLY who is in frame and how many people, (3) a spatial layout sentence: foreground / midground / background and left / right positions of every figure and object, (4) the action in one simple pose per figure, (5) the real place and its period-accurate architecture, objects and clothing, (6) time of day, light direction, colour palette and mood.
-Also write one "cover" prompt (square 1:1, a calm, dignified head-and-shoulders portrait of the saint, or the central subject of the feast, in a setting that reflects their life) following the same rules.
+Also write one "cover" prompt (square 1:1). If the subject type is "person": a calm head-and-shoulders portrait of the saint in a setting that reflects their life. Otherwise (angels, group, mystery, object): the central subject of the feast shown through its cast in one clear scene (NOT a portrait of a lone robed figure).
 
 Respond ONLY with JSON: {"cover": "...", "scenes": ["prompt for scene 1", "..."]} with exactly ${scenes.length} scene prompts.`, 0.3, 600 + (scenes.length + 1) * 260);
       if (!draft?.cover || !Array.isArray(draft.scenes) || draft.scenes.length !== scenes.length) throw new Error('director returned an unexpected shape');
@@ -216,7 +228,7 @@ For EACH item decide:
 NARRATION AND DRAFT PROMPTS (item 0 is the cover):
 ${JSON.stringify([{ i: 0, narration: 'cover portrait', prompt: draft.cover }, ...draft.scenes.map((p: string, i: number) => ({ i: i + 1, narration: scenes[i].voiceover, prompt: p }))])}
 
-Saint appearance (fixed): ${saint.appearance || 'n/a (the subject is not one person)'}\nSubject: ${saint.name}\n\nRespond ONLY with JSON: {"items": [ {"i": 0, "problems": [], "prompt": "...", "safe_prompt": "...", "must_include": ["..."], "people": 1, "main_character_visible": true, "risk": "low"}, ... ]} with exactly ${scenes.length + 1} items in order.`, 0.2, 700 + (scenes.length + 1) * 500);
+Saint appearance (fixed): ${saint.appearance || 'n/a (the subject is not one person)'}\nSubject: ${saint.name} (${facts?.subject_type || 'person'})\nCAST: ${facts ? JSON.stringify(facts.cast).slice(0, 1200) : 'n/a'}${facts?.iconography ? `\nIconography: ${facts.iconography}` : ''}\n\nRespond ONLY with JSON: {"items": [ {"i": 0, "problems": [], "prompt": "...", "safe_prompt": "...", "must_include": ["..."], "people": 1, "main_character_visible": true, "risk": "low"}, ... ]} with exactly ${scenes.length + 1} items in order.`, 0.2, 700 + (scenes.length + 1) * 500);
         const items: any[] = audit?.items;
         if (!Array.isArray(items) || items.length !== scenes.length + 1) throw new Error('checker returned an unexpected shape');
         const toPrompt = (it: any, fallback: string): ScenePrompt => ({
@@ -412,7 +424,7 @@ Respond ONLY with a JSON object: {"lines": [${scenes.length} strings in the same
       const storyData = { what_we_learn: factData.what_we_learn, did_you_know: String(factData.did_you_know), full_story: '' };
       const roman = targetLang !== 'en' && !!opts.roman;
       const romanName = targetLang === 'hi' ? 'Hinglish (Hindi in English letters, as people type it on WhatsApp)' : 'Pinglish (Punjabi in English letters, as people type it on WhatsApp)';
-      const { appearance: _a, ...facts } = factData; // appearance is shown separately below
+      const { appearance: _a, cast: _c, iconography: _i, ...facts } = factData; // shown separately below
 
       // ONE call: script + caption + hashtags (+ romanized subtitles). The fact sheet is cached, so no extraction call here.
       const scriptPrompt = `
@@ -428,8 +440,9 @@ voiceover: ${preset.words[0]}-${preset.words[1]} spoken words per scene, natural
 visual: a concrete scene (place, action, light) that shows what the narration says; no text, letters or logos.
 ${roman ? `subtitle: the SAME voiceover written in ${romanName}: every word and the exact meaning, no translation into English, simple common spellings, no accents. Saint names and English words in normal English spelling.` : ''}
 Fidelity: depict only events/places in the FACT SHEET; add no invented events, clothing, props or symbols (no halo, robe, cross or rosary unless documented). Use the real era's technology and settings.
-SAINT APPEARANCE (identical in every scene, including illness/death scenes): ${saint.appearance || (factData.appearance || 'use accurate age, clothing and setting for this subject')}
-Whenever the saint appears in a "visual", describe them as exactly that person (same apparent age, gender, hair, clothing). NEVER show the saint old unless the appearance says so.
+SAINT APPEARANCE (identical in every scene, including illness/death scenes): ${saint.appearance || (factData.appearance || 'none: this feast is not about one person')}
+SUBJECT TYPE: ${factData.subject_type}. CAST (use these looks for every person or being in a "visual"): ${JSON.stringify(factData.cast).slice(0, 1500)}${factData.iconography ? `\nICONOGRAPHY: ${factData.iconography}` : ''}
+Whenever a cast member appears in a "visual", describe them exactly as listed (same apparent age, gender, hair, clothing). NEVER show anyone as a Christ-like long-haired bearded man in a robe unless the story is about Jesus. NEVER show the saint old unless the appearance says so.
 caption: 200-300 characters in ${langLabel}, start with an emoji (🙏 ✨ 🕊️), include the saint's name, the feast date, one key lesson and a warm closing line (no follow/subscribe call). hashtags: 30 relevant hashtags (include regional Catholic tags in ${langLabel}).
 
 FACT SHEET (JSON, language-neutral English):
