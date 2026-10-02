@@ -14,6 +14,8 @@ export interface ImageRequest {
   refUrl?: string;
   /** Same image on local disk, when we generated it ourselves (avoids calling our own server). */
   refPath?: string;
+  /** max side of the reference image sent to providers that resize it (editing wants more detail than identity refs) */
+  refMax?: number;
 }
 
 export interface ImageProvider {

@@ -29,7 +29,7 @@ export function msUntilUtcMidnight(): number {
   return Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1) - now.getTime() + 60_000;
 }
 
-export function classify(e: any, msg: string): { kind: 'hard' | 'quota' | 'keyless' | 'outage' | 'transient'; ms: number } {
+export function classify(e: any, msg: string): { kind: 'hard' | 'quota' | 'keyless' | 'outage' | 'reject' | 'transient'; ms: number } {
   const st = e?.response?.status;
   if (/only available on enter\.pollinations\.ai/i.test(msg)) return { kind: 'keyless', ms: 24 * 3600_000 };
   // Cloudflare's free allowance is per UTC day: rest until it renews instead of retrying every few minutes.
@@ -38,6 +38,7 @@ export function classify(e: any, msg: string): { kind: 'hard' | 'quota' | 'keyle
   // "check your plan and billing" = this key has NO quota for this model at all (not a rate limit): rest 6 h.
   if (st === 429 && /plan and billing|billing details/i.test(msg)) return { kind: 'quota', ms: 6 * 3600_000 };
   if (st === 429) return { kind: 'quota', ms: 5 * 60_000 };
+  if (st === 400 || st === 422) return { kind: 'reject', ms: 0 }; // this request was refused: try the next provider now, no waiting
   if (st === 502 || st === 503 || st === 504) return { kind: 'outage', ms: 3 * 60_000 }; // provider is down: skip it for a bit, don't wait around
   return { kind: 'transient', ms: 0 };
 }

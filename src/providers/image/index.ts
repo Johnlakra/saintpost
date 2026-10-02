@@ -28,14 +28,15 @@ export class ImageProvidersExhausted extends Error {
   }
 }
 
-function plan(req: ImageRequest, allowBasic: boolean): Array<{ p: ImageProvider; withRef: boolean }> {
+function plan(req: ImageRequest, allowBasic: boolean, requireRef = false): Array<{ p: ImageProvider; withRef: boolean }> {
   const usable = IMAGE_PROVIDERS.filter(p => p.enabled() && (allowBasic || p.tier !== 'basic'));
   const byTier = (a: ImageProvider, b: ImageProvider) => TIER_RANK[a.tier] - TIER_RANK[b.tier];
   const out: Array<{ p: ImageProvider; withRef: boolean }> = [];
   if (req.refUrl || req.refPath) {
     // 1) providers that can use the reference (best chance of the right face), 2) everything else text-only
     usable.filter(p => p.mode !== 'text').sort(byTier).forEach(p => out.push({ p, withRef: true }));
-    usable.filter(p => p.mode !== 'ref').sort(byTier).forEach(p => out.push({ p, withRef: false }));
+    // editing a picture must NEVER fall back to a text-only model (it would invent an unrelated image)
+    if (!requireRef) usable.filter(p => p.mode !== 'ref').sort(byTier).forEach(p => out.push({ p, withRef: false }));
   } else {
     usable.filter(p => p.mode !== 'ref').sort(byTier).forEach(p => out.push({ p, withRef: false }));
   }
@@ -47,9 +48,9 @@ function plan(req: ImageRequest, allowBasic: boolean): Array<{ p: ImageProvider;
  * retries the remaining ones after a wait when failures look temporary; NEVER returns a low-quality image
  * unless basic-tier providers are explicitly allowed and the result passes a size gate.
  */
-export async function generateImage(req: ImageRequest, opts: { allowBasic?: boolean } = {}): Promise<ImageResult> {
+export async function generateImage(req: ImageRequest, opts: { allowBasic?: boolean; requireRef?: boolean } = {}): Promise<ImageResult> {
   const allowBasic = opts.allowBasic ?? process.env.ALLOW_BASIC_IMAGES === 'true';
-  const order = plan(req, allowBasic);
+  const order = plan(req, allowBasic, opts.requireRef);
   if (order.length === 0) throw new ImageProvidersExhausted(['no image provider is configured (set GEMINI_API_KEY, CLOUDFLARE_*, HUGGINGFACE_API_KEY ...)']);
 
   const failures: string[] = [];
@@ -78,7 +79,7 @@ export async function generateImage(req: ImageRequest, opts: { allowBasic?: bool
           if (e.quality) { failures.push(`${p.label}: ${msg}`); break; }
           const c = classify(e, msg);
           if (c.kind !== 'transient') {
-            cooldown(p.id, c.ms, c.kind === 'hard' ? 'credit/auth problem' : c.kind === 'quota' ? 'quota reached' : c.kind === 'outage' ? 'provider outage' : 'needs an account key');
+            cooldown(p.id, c.ms, c.kind === 'hard' ? 'credit/auth problem' : c.kind === 'quota' ? 'quota reached' : c.kind === 'outage' ? 'provider outage' : c.kind === 'reject' ? 'request rejected' : 'needs an account key');
             failures.push(`${p.label}: ${msg}`);
             break;
           }

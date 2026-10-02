@@ -57,7 +57,8 @@ async function showScene(ctx: Context, d: Draft, n: number) {
   await ctx.editMessageText(
     `Scene ${n}/${d.manifest.scenes.length}\n\n🎙 ${s.voiceover}\n\n🔤 Title: ${s.overlay || '(none)'}\n\n🖼 Picture idea: ${short(s.visual, 200)}`,
     Markup.inlineKeyboard([
-      [Markup.button.callback('🖼 Redraw picture', `ed:img:${n}`), Markup.button.callback('🖼 Redraw with my change', `ed:imgi:${n}`)],
+      [Markup.button.callback('✏️ Change this picture (keeps the rest)', `ed:imgi:${n}`)],
+      [Markup.button.callback('🖼 Redraw from scratch', `ed:img:${n}`)],
       [Markup.button.callback('🎙 Edit narration', `ed:nar:${n}`), Markup.button.callback('🔤 Edit title', `ed:tit:${n}`)],
       [Markup.button.callback('🗑 Delete scene', `ed:del:${n}`)],
       [Markup.button.callback('⬅️ Back to scenes', 'ed:back')],
@@ -161,7 +162,7 @@ export function registerEditMenu(bot: Telegraf<Context>, auth: (ctx: Context, ne
     });
   ask('narration', `🎙 Send the new narration for this scene (in the video's language). Keep it about the same length so it still fits the picture.`);
   ask('title', '🔤 Send the new on-screen title (max 6 words), or "-" to remove it.');
-  ask('instruction', '🖼 What should change in the picture? For example: "make the angel look younger", "show the child on the left", "remove the people in the background".');
+  ask('instruction', '✏️ What should change in this picture? Only that is changed; the composition, background and faces stay. For example: "make the angel look younger", "remove the people in the background", "make it evening".');
   bot.action('ed:cap', auth, async ctx => {
     const d = await need(ctx); if (!d) return;
     await ctx.answerCbQuery();
@@ -179,7 +180,7 @@ export async function handleEditText(ctx: Context, st: Pending, text: string): P
   try {
     if (st.field === 'narration') await editService.setNarration(d, st.idx, text);
     else if (st.field === 'title') editService.setTitle(d, st.idx, text);
-    else if (st.field === 'instruction') editService.redrawScene(d, st.idx, text);
+    else if (st.field === 'instruction') editService.redrawScene(d, st.idx, text, true);
     else editService.setCaption(d, text);
   } catch (e: any) {
     await ctx.reply(`❌ ${e.message}`);

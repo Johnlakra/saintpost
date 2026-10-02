@@ -175,6 +175,41 @@ export class VisualAssetService {
   }
 
   /**
+   * Instruction-based EDIT of an existing picture ("make the angel younger"): the current picture goes in as the
+   * reference with an explicit "change only this, keep everything else" instruction. Best practice for editing: the
+   * composition, light, background, other figures and faces stay, and no LLM prompt rewrite is needed.
+   * Throws (so the caller can fall back to a full redraw) when no reference-capable provider works or the inspector rejects it.
+   */
+  async editScene(saint: SaintRecord, currentImagePath: string, instruction: string, index: number, mustInclude: string[] = []): Promise<ImageAssetResult> {
+    const name = `edit_src_${slug(saint.name)}_${Date.now()}.png`;
+    const src = path.join(this.outputDir, name);
+    fs.copyFileSync(currentImagePath, src);
+    const prompt =
+      `Edit this picture. Change ONLY this: ${instruction}. ` +
+      `Keep everything else exactly the same: the composition and camera angle, the lighting, the background and setting, the other figures, and the face, age, hair and clothing of every person. ` +
+      `Do not add text, letters, extra hands or extra people; keep every body clearly separate.`;
+    const { buffer, provider } = await generateImage(
+      { prompt, shape: SHAPES.story, seed: this.seedFor(saint) + index + 31, refUrl: `${config.renderExternalUrl}/assets/${name}`, refPath: src, refMax: 1024 },
+      { requireRef: true }
+    );
+    this.report.byProvider[provider.label] = (this.report.byProvider[provider.label] || 0) + 1;
+    const fileName = `scene_${index + 1}_${slug(saint.name)}_edit_${Date.now()}.png`;
+    const localPath = path.join(this.outputDir, fileName);
+    const tmp = `${localPath}.raw`;
+    fs.writeFileSync(tmp, buffer);
+    try {
+      await ffmpeg(['-i', tmp, '-vf', `scale=${SHAPES.story.w}:${SHAPES.story.h}:force_original_aspect_ratio=increase:flags=lanczos,crop=${SHAPES.story.w}:${SHAPES.story.h}`, '-frames:v', '1', localPath]);
+    } finally {
+      fs.rmSync(tmp, { force: true });
+    }
+    if (qaEnabled()) {
+      const v = await inspectImage(localPath, mustInclude.join(', ') || instruction, mustInclude);
+      if (v.checked && !v.pass) throw new Error(`the edited picture has a visible flaw (${v.issues.join('; ') || 'unspecified'})`);
+    }
+    return { localPath, url: `${config.renderExternalUrl}/assets/${fileName}` };
+  }
+
+  /**
    * Redraw ONE scene for an existing project. The cover (when we have it) is the face anchor, exactly as in the
    * original run, so the saint still looks the same. Returns a JPEG-ready PNG path.
    */

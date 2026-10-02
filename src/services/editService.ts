@@ -26,6 +26,8 @@ export interface Draft {
   dirtyAud: Set<number>;
   /** per-scene change requests for the picture ("make the angel younger") */
   instructions: Map<number, string>;
+  /** scenes whose picture is EDITED in place (keeps composition) rather than redrawn from scratch */
+  editInPlace: Set<number>;
   /** a translation or caption/title edit changed what is on screen: a re-render is needed */
   needsRender: boolean;
   summary: string[];
@@ -41,14 +43,16 @@ export class EditService {
   async open(projectId: number): Promise<Draft | null> {
     const p = await projectService.load(projectId);
     if (!p) return null;
-    return { projectId, manifest: p.manifest, assets: p.assets, videoUrl: p.videoUrl, coverUrl: p.coverUrl, dirtyImg: new Set(), dirtyAud: new Set(), instructions: new Map(), needsRender: false, summary: [] };
+    return { projectId, manifest: p.manifest, assets: p.assets, videoUrl: p.videoUrl, coverUrl: p.coverUrl, dirtyImg: new Set(), dirtyAud: new Set(), instructions: new Map(), editInPlace: new Set(), needsRender: false, summary: [] };
   }
 
   // ---- edits (cheap: they only mark what must be redone) ----
-  redrawScene(d: Draft, i: number, instruction?: string) {
+  /** instruction + inPlace = edit the existing picture (keeps the rest); otherwise redraw from scratch. */
+  redrawScene(d: Draft, i: number, instruction?: string, inPlace = false) {
     d.dirtyImg.add(i);
     if (instruction) d.instructions.set(i, instruction);
-    d.summary.push(`Scene ${i + 1}: new picture${instruction ? ` ("${instruction.slice(0, 40)}")` : ''}`);
+    if (instruction && inPlace) d.editInPlace.add(i); else d.editInPlace.delete(i);
+    d.summary.push(`Scene ${i + 1}: ${instruction && inPlace ? 'edit picture' : 'new picture'}${instruction ? ` ("${instruction.slice(0, 40)}")` : ''}`);
   }
 
   async setNarration(d: Draft, i: number, text: string) {
@@ -83,6 +87,7 @@ export class EditService {
     const shift = (s: Set<number>) => new Set([...s].filter(x => x !== i).map(x => (x > i ? x - 1 : x)));
     d.dirtyImg = shift(d.dirtyImg);
     d.dirtyAud = shift(d.dirtyAud);
+    d.editInPlace = shift(d.editInPlace);
     const ins = new Map<number, string>();
     d.instructions.forEach((v, k) => { if (k !== i) ins.set(k > i ? k - 1 : k, v); });
     d.instructions = ins;
@@ -128,14 +133,28 @@ export class EditService {
         onProgress(`🖼 Redrawing scene ${i + 1}…`);
         const sc = m.scenes[i];
         const instr = d.instructions.get(i);
-        if (instr) {
-          const r = await this.llm.rewriteImagePrompt(sc.image_prompt || sc.visual, instr, sc.voiceover, { appearance: m.saint.appearance, mustInclude: sc.must_include });
-          sc.image_prompt = r.prompt;
-          sc.safe_prompt = r.safe || sc.safe_prompt;
-          sc.must_include = r.mustInclude;
+        let img: { localPath: string } | null = null;
+        if (instr && d.editInPlace.has(i) && d.assets.scenes[i]) {
+          // best way: edit the existing picture (no prompt rewrite, composition and faces stay)
+          try {
+            const cur = path.join(work, `cur${i}.jpg`);
+            fs.writeFileSync(cur, d.assets.scenes[i]!);
+            img = await this.visual.editScene(saint, cur, instr, i, sc.must_include || []);
+            sc.image_prompt = `${sc.image_prompt || sc.visual} Also: ${instr}.`; // keep later full redraws consistent with the change
+          } catch (e: any) {
+            console.warn(`   ⚠️ In-place edit of scene ${i + 1} failed (${String(e.message).slice(0, 120)}); redrawing from the updated prompt instead.`);
+          }
         }
-        const scene: SceneScript = { scene_number: i + 1, duration: 0, visual: sc.visual, voiceover: sc.voiceover, text_overlay: sc.overlay, image_prompt: sc.image_prompt, safe_prompt: sc.safe_prompt, must_include: sc.must_include, risk: sc.risk, uses_main: sc.uses_main };
-        const img = await this.visual.regenerateScene(saint, scene, i, d.assets.cover ? coverFile : undefined, 1 + Math.floor(Math.random() * 50));
+        if (!img) {
+          if (instr) {
+            const r = await this.llm.rewriteImagePrompt(sc.image_prompt || sc.visual, instr, sc.voiceover, { appearance: m.saint.appearance, mustInclude: sc.must_include });
+            sc.image_prompt = r.prompt;
+            sc.safe_prompt = r.safe || sc.safe_prompt;
+            sc.must_include = r.mustInclude;
+          }
+          const scene: SceneScript = { scene_number: i + 1, duration: 0, visual: sc.visual, voiceover: sc.voiceover, text_overlay: sc.overlay, image_prompt: sc.image_prompt, safe_prompt: sc.safe_prompt, must_include: sc.must_include, risk: sc.risk, uses_main: sc.uses_main };
+          img = await this.visual.regenerateScene(saint, scene, i, d.assets.cover ? coverFile : undefined, 1 + Math.floor(Math.random() * 50));
+        }
         d.assets.scenes[i] = await ProjectService.toJpeg(img.localPath);
         d.assets.aiClips && delete d.assets.aiClips[i]; // the old motion clip no longer matches the new picture
         redrawn++;
@@ -177,7 +196,7 @@ export class EditService {
       await projectService.save(d.projectId, m, d.assets, videoUrl);
       d.videoUrl = videoUrl;
       const reRecorded = aud.length;
-      d.dirtyImg.clear(); d.dirtyAud.clear(); d.instructions.clear(); d.needsRender = false; d.summary = [];
+      d.dirtyImg.clear(); d.dirtyAud.clear(); d.instructions.clear(); d.editInPlace.clear(); d.needsRender = false; d.summary = [];
       // the cover must be reachable at a public URL for publishing (old files may be gone after a redeploy)
       let coverUrl: string | undefined;
       if (d.assets.cover) {

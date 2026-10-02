@@ -45,7 +45,7 @@ function extractImage(res: { data: any; headers: any }): Buffer {
 }
 
 /** Reference photo -> small JPEG (max 512 px side: cheap, and within Workers AI input limits). */
-async function smallReference(req: ImageRequest): Promise<Buffer | null> {
+async function smallReference(req: ImageRequest, max = 512): Promise<Buffer | null> {
   try {
     let bytes: Buffer;
     if (req.refPath && fs.existsSync(req.refPath)) bytes = fs.readFileSync(req.refPath);
@@ -55,7 +55,7 @@ async function smallReference(req: ImageRequest): Promise<Buffer | null> {
     const tmpOut = `${tmpIn}.jpg`;
     fs.writeFileSync(tmpIn, bytes);
     try {
-      await ffmpeg(['-i', tmpIn, '-vf', 'scale=512:512:force_original_aspect_ratio=decrease', '-frames:v', '1', '-q:v', '3', tmpOut]);
+      await ffmpeg(['-i', tmpIn, '-vf', `scale=${max}:${max}:force_original_aspect_ratio=decrease`, '-frames:v', '1', '-q:v', '3', tmpOut]);
       return fs.readFileSync(tmpOut);
     } finally {
       fs.rmSync(tmpIn, { force: true });
@@ -76,24 +76,33 @@ export const cloudflareKlein: ImageProvider = {
   enabled: on,
   async generate(req) {
     const { w, h } = capped(req.shape, 1792);
-    const form = new FormData();
-    form.append('prompt', req.prompt.slice(0, 3000));
-    form.append('width', String(w));
-    form.append('height', String(h));
-    let refs = 0;
-    if (req.refUrl || req.refPath) {
-      const ref = await smallReference(req);
-      if (ref) {
-        form.append('input_image_0', new Blob([new Uint8Array(ref)], { type: 'image/jpeg' }), 'ref.jpg');
-        refs = 1;
+    const wantsRef = !!(req.refUrl || req.refPath);
+    // identity references are small (512 px, cheap); edits send more detail so the unchanged parts stay faithful
+    let refMax = req.refMax ?? 512;
+    for (;;) {
+      const form = new FormData();
+      form.append('prompt', req.prompt.slice(0, 3000));
+      form.append('width', String(w));
+      form.append('height', String(h));
+      let refs = 0;
+      if (wantsRef) {
+        const ref = await smallReference(req, refMax);
+        if (ref) {
+          form.append('input_image_0', new Blob([new Uint8Array(ref)], { type: 'image/jpeg' }), 'ref.jpg');
+          refs = 1;
+        }
+      }
+      try {
+        const res = await axios.post(`${base()}/@cf/black-forest-labs/flux-2-klein-4b`, form, { headers: auth(), responseType: 'arraybuffer', timeout: 120000 });
+        const img = extractImage(res);
+        spend(kleinCost(w, h, refs));
+        return img;
+      } catch (e: any) {
+        // a bigger reference than the model accepts is rejected (400/422): retry once at the safe size
+        if (refMax > 512 && (e.response?.status === 400 || e.response?.status === 422)) { refMax = 512; continue; }
+        throw e;
       }
     }
-    const res = await axios.post(`${base()}/@cf/black-forest-labs/flux-2-klein-4b`, form, {
-      headers: auth(), responseType: 'arraybuffer', timeout: 120000,
-    });
-    const img = extractImage(res);
-    spend(kleinCost(w, h, refs));
-    return img;
   },
 };
 
