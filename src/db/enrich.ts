@@ -34,10 +34,11 @@ Rules:
 Input (JSON):
 ${JSON.stringify(batch.map(r => ({ id: r.id, name_es: r.name, rank: r.rank, source: String(r.source_text || '').slice(0, 900) })))}
 
-Respond ONLY with a JSON array, one object per input, with fields: id, name, rank, color, patronage, short_description, era, region, symbols.`;
+Respond ONLY with a JSON object {"items": [...]}: one object per input in "items", with fields: id, name, rank, color, patronage, short_description, era, region, symbols.`;
 
     try {
-      const out: any[] = await llm.completeJson(prompt);
+      const raw = await llm.completeJson(prompt);
+      const out: any[] = Array.isArray(raw) ? raw : raw?.items || [];
       for (const o of out) {
         if (!o?.id || !o.name) continue;
         await db.query(

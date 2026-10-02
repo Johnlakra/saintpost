@@ -1,4 +1,6 @@
 import axios from 'axios';
+import { jsonrepair } from 'jsonrepair';
+import { cooldown, coolingFor } from '../providers/cooldown.js';
 import { config } from '../config/env.js';
 import { SaintRecord } from '../data/sanctusFetcher.js';
 import { romanizeFallback } from '../utils/romanize.js';
@@ -107,7 +109,7 @@ export class LLMService {
 
     // Proven cheap multilingual default, tried before the (unreliable) free tier.
     const dependable = ['deepseek/deepseek-chat'].filter(m => !liveIds.size || liveIds.has(m));
-    return [...new Set([...configured, ...dependable, ...free])].filter(m => !this.badModels.has(m)).slice(0, 8);
+    return [...new Set([...configured, ...dependable, ...free])].filter(m => !this.badModels.has(m) && !coolingFor(`llm:${m}`)).slice(0, 8);
   }
 
 
@@ -147,7 +149,7 @@ Return JSON:
   "terms": [ {"term": "a Church word a beginner may not know", "plain": "very short plain explanation"} ],
   "appearance": "ONLY if the subject is one real person: one sentence (max 40 words) starting with apparent age and gender, then complexion, hair and everyday clothing correct for their real time and place. Age = the age they are best known at (the real age at death for saints who died young). Do NOT add a religious habit, robe, cassock, halo, cross, rosary, glasses or any accessory unless the SOURCE explicitly says they wore/used it. Never default to an old bearded man. Use \"\" if the subject is not one person (e.g. a feast of the Angels)."
 }
-Respond ONLY with JSON.`, 0.2);
+Respond ONLY with JSON.`, 0.2, 2400);
     if (!isDossier(d)) throw new Error('LLM returned an incomplete fact sheet');
     this.dossiers.set(key, d);
     return d;
@@ -193,7 +195,7 @@ ${VISUAL_RULES}
 For each scene write ONE prompt of 90-140 English words in this order: (1) shot type and camera angle, (2) EXACTLY who is in frame and how many people, (3) a spatial layout sentence: foreground / midground / background and left / right positions of every figure and object, (4) the action in one simple pose per figure, (5) the real place and its period-accurate architecture, objects and clothing, (6) time of day, light direction, colour palette and mood.
 Also write one "cover" prompt (square 1:1, a calm, dignified head-and-shoulders portrait of the saint, or the central subject of the feast, in a setting that reflects their life) following the same rules.
 
-Respond ONLY with JSON: {"cover": "...", "scenes": ["prompt for scene 1", "..."]} with exactly ${scenes.length} scene prompts.`, 0.3);
+Respond ONLY with JSON: {"cover": "...", "scenes": ["prompt for scene 1", "..."]} with exactly ${scenes.length} scene prompts.`, 0.3, 600 + (scenes.length + 1) * 260);
       if (!draft?.cover || !Array.isArray(draft.scenes) || draft.scenes.length !== scenes.length) throw new Error('director returned an unexpected shape');
 
       // ---- Stage 2: CHECKER
@@ -214,7 +216,7 @@ For EACH item decide:
 NARRATION AND DRAFT PROMPTS (item 0 is the cover):
 ${JSON.stringify([{ i: 0, narration: 'cover portrait', prompt: draft.cover }, ...draft.scenes.map((p: string, i: number) => ({ i: i + 1, narration: scenes[i].voiceover, prompt: p }))])}
 
-Saint appearance (fixed): ${saint.appearance || 'n/a (the subject is not one person)'}\nSubject: ${saint.name}\n\nRespond ONLY with JSON: {"items": [ {"i": 0, "problems": [], "prompt": "...", "safe_prompt": "...", "must_include": ["..."], "people": 1, "main_character_visible": true, "risk": "low"}, ... ]} with exactly ${scenes.length + 1} items in order.`, 0.2);
+Saint appearance (fixed): ${saint.appearance || 'n/a (the subject is not one person)'}\nSubject: ${saint.name}\n\nRespond ONLY with JSON: {"items": [ {"i": 0, "problems": [], "prompt": "...", "safe_prompt": "...", "must_include": ["..."], "people": 1, "main_character_visible": true, "risk": "low"}, ... ]} with exactly ${scenes.length + 1} items in order.`, 0.2, 700 + (scenes.length + 1) * 500);
         const items: any[] = audit?.items;
         if (!Array.isArray(items) || items.length !== scenes.length + 1) throw new Error('checker returned an unexpected shape');
         const toPrompt = (it: any, fallback: string): ScenePrompt => ({
@@ -260,9 +262,10 @@ Rules:
 Input lines (JSON array):
 ${JSON.stringify(scenes.map(s => s.voiceover))}
 
-Respond ONLY with a JSON array of ${scenes.length} strings in the same order.`, 0.1);
-      if (!Array.isArray(out) || out.length !== scenes.length || out.some(x => typeof x !== 'string')) throw new Error('unexpected shape');
-      return out.map((x: string) => x.trim());
+Respond ONLY with a JSON object: {"lines": [${scenes.length} strings in the same order]}.`, 0.1, 400 + scenes.length * 120);
+      const lines = Array.isArray(out) ? out : out?.lines;
+      if (!Array.isArray(lines) || lines.length !== scenes.length || lines.some((x: any) => typeof x !== 'string')) throw new Error('unexpected shape');
+      return lines.map((x: string) => x.trim());
     } catch (e: any) {
       console.warn(`⚠️ LLM romanization failed (${e.message}); using rule-based transliteration.`);
       return scenes.map(s => romanizeFallback(s.voiceover, lang));
@@ -281,17 +284,41 @@ Respond ONLY with a JSON array of ${scenes.length} strings in the same order.`, 
   }
 
   /** Generic JSON completion used by maintenance scripts (db:enrich). */
-  async completeJson(prompt: string, temperature = 0.7): Promise<any> {
-    const text = await this.queryOpenRouter(prompt, undefined, temperature);
-    const m = text.replace(/```json|```/g, '').match(/[\[{][\s\S]*[\]}]/);
+  async completeJson(prompt: string, temperature = 0.7, maxTokens = 3000): Promise<any> {
+    let lastErr: any;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const text = await this.queryOpenRouter(
+        attempt === 1 ? prompt : `${prompt}\n\nIMPORTANT: your previous answer was not valid JSON. Answer again with strictly valid JSON only: double quotes, no comments, no trailing commas, no text outside the JSON.`,
+        undefined, attempt === 1 ? temperature : Math.min(temperature, 0.2), { maxTokens, json: true }
+      );
+      try {
+        return LLMService.parseJsonLoose(text);
+      } catch (e: any) {
+        lastErr = e;
+        console.warn(`⚠️ LLM returned unparseable JSON (attempt ${attempt}/2): ${e.message}`);
+      }
+    }
+    throw lastErr;
+  }
+
+  /** Tolerant JSON: strips code fences/prose, then repairs trailing commas, comments, unescaped newlines, etc. */
+  static parseJsonLoose(text: string): any {
+    const cleaned = text.replace(/```json|```/g, '');
+    const m = cleaned.match(/[\[{][\s\S]*[\]}]/);
     if (!m) throw new Error('LLM did not return JSON');
-    return JSON.parse(m[0]);
+    try { return JSON.parse(m[0]); } catch { /* try to repair */ }
+    return JSON.parse(jsonrepair(m[0]));
   }
 
   /**
    * Helper to execute completion against OpenRouter API with model fallback rotation
    */
-  private async queryOpenRouter(prompt: string, modelOverride?: string, temperature = 0.7): Promise<string> {
+  private async queryOpenRouter(
+    prompt: string,
+    modelOverride?: string,
+    temperature = 0.7,
+    opts: { maxTokens?: number; json?: boolean } = {}
+  ): Promise<string> {
     if (config.dryRun || !this.openrouterApiKey) {
       console.log(`[DRY RUN] OpenRouter prompt (${modelOverride || this.primaryModel}):\n${prompt.substring(0, 150)}...`);
       return '';
@@ -301,37 +328,58 @@ Respond ONLY with a JSON array of ${scenes.length} strings in the same order.`, 
     if (modelsToTry.length === 0) throw new Error('No usable OpenRouter models found (check OPENROUTER_MODEL / key credits).');
 
     for (const model of modelsToTry) {
-      try {
-        console.log(`🤖 Querying LLM via OpenRouter model: ${model}...`);
-        const response = await axios.post(
-          'https://openrouter.ai/api/v1/chat/completions',
-          {
-            model: model,
-            messages: [{ role: 'user', content: prompt }],
-            temperature,
-          },
-          {
-            headers: {
-              'Authorization': `Bearer ${this.openrouterApiKey}`,
-              'HTTP-Referer': config.renderExternalUrl,
-              'X-Title': 'SaintPost Automation Bot',
-              'Content-Type': 'application/json',
+      // An explicit max_tokens keeps the request affordable on a small balance (OpenRouter otherwise reserves the
+      // model's maximum) and caps runaway output.
+      let maxTokens = opts.maxTokens ?? 4000;
+      let json = !!opts.json;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          console.log(`🤖 Querying LLM via OpenRouter model: ${model}...`);
+          const response = await axios.post(
+            'https://openrouter.ai/api/v1/chat/completions',
+            {
+              model,
+              messages: [{ role: 'user', content: prompt }],
+              temperature,
+              max_tokens: maxTokens,
+              ...(json ? { response_format: { type: 'json_object' } } : {}),
             },
-            timeout: 240000, // long scripts (15 scenes) can take a couple of minutes
+            {
+              headers: {
+                'Authorization': `Bearer ${this.openrouterApiKey}`,
+                'HTTP-Referer': config.renderExternalUrl,
+                'X-Title': 'SaintPost Automation Bot',
+                'Content-Type': 'application/json',
+              },
+              timeout: 240000, // long scripts (15 scenes) can take a couple of minutes
+            }
+          );
+          const text = response.data?.choices?.[0]?.message?.content;
+          if (text) return String(text).trim();
+          break;
+        } catch (err: any) {
+          const detail: string = err.response?.data?.error?.message || err.message;
+          const status = err.response?.status;
+          const afford = /can only afford (\d+)/i.exec(detail);
+          if (afford && attempt < 3) {
+            // low balance: shrink the request to what the account can pay for and try again
+            const room = parseInt(afford[1], 10) - 100;
+            if (room >= 600 && room < maxTokens) {
+              console.warn(`⚠️ OpenRouter balance is low: retrying with max_tokens=${room}. Top up credits at openrouter.ai.`);
+              maxTokens = room;
+              continue;
+            }
           }
-        );
-
-        const text = response.data?.choices?.[0]?.message?.content;
-        if (text) return String(text).trim();
-      } catch (err: any) {
-        const detail = err.response?.data?.error?.message || err.message;
-        const status = err.response?.status;
-        if (status && status !== 429 && status < 500) this.badModels.add(model);
-        console.warn(`⚠️ OpenRouter error on model ${model}: ${detail}`);
+          if (json && status === 400 && /response_format|json/i.test(detail)) { json = false; continue; } // model has no JSON mode
+          console.warn(`⚠️ OpenRouter error on model ${model}: ${detail}`);
+          if (status === 402 || afford) cooldown(`llm:${model}`, 10 * 60_000, 'low OpenRouter credit');
+          else if (status && status !== 429 && status < 500) this.badModels.add(model);
+          break;
+        }
       }
     }
 
-    throw new Error('All OpenRouter models failed to respond.');
+    throw new Error('All OpenRouter models failed to respond. If your OpenRouter balance is low, add credit at openrouter.ai/credits.');
   }
 
   /**
@@ -392,7 +440,7 @@ Return ONE JSON object:
 with exactly ${preset.scenes} scenes. Respond ONLY with the JSON object.
 `;
 
-      const obj = JSON.parse((await this.queryOpenRouter(scriptPrompt, undefined, 0.6)).replace(/```json|```/g, '').match(/\{[\s\S]*\}/)?.[0] || '');
+      const obj = await this.completeJson(scriptPrompt, 0.6, 700 + preset.scenes * (targetLang === 'en' ? 230 : 330));
       const videoScript: SceneScript[] = obj.scenes;
       const minScenes = Math.max(3, Math.floor(preset.scenes * 0.7));
       if (!Array.isArray(videoScript) || videoScript.length < minScenes || videoScript.some(sc => !sc.visual || !sc.voiceover)) {

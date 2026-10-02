@@ -159,3 +159,8 @@ LLM calls per video (DeepSeek via OpenRouter): **first time for a saint 4, repea
 3. Image director, 4. prompt checker: both read the compact fact sheet, not the full biography.
 
 Images: one per scene plus the cover. The inspector looks only at the cover and scenes rated medium/high risk, pictures are painted two at a time, narration is recorded while pictures are painted, the face reference is applied only to scenes where the saint is actually shown, and Gemini/OpenRouter model names are discovered from the API instead of hard-coded.
+
+
+## LLM reliability (OpenRouter)
+
+Every LLM call sets an explicit `max_tokens` (sized to the video length) and uses JSON mode when the model supports it. If OpenRouter says the balance can only afford N tokens, the call is retried with that smaller limit; a 402 rests the model for 10 minutes instead of banning it. Replies are parsed leniently (`jsonrepair`: trailing commas, comments, code fences) and retried once with a stricter instruction if still invalid. Keep a few dollars on the OpenRouter key: with `deepseek/deepseek-chat` a video uses roughly 10-20k tokens (check openrouter.ai for the current price).
