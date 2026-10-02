@@ -24,10 +24,18 @@ export function recordFail(id: string, msg: string) {
 export const providerStats = (id: string) => stats.get(id) || { ok: 0, fail: 0 };
 
 /** Classify an error so every router treats failures the same way. */
-export function classify(e: any, msg: string): { kind: 'hard' | 'quota' | 'keyless' | 'transient'; ms: number } {
+export function msUntilUtcMidnight(): number {
+  const now = new Date();
+  return Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1) - now.getTime() + 60_000;
+}
+
+export function classify(e: any, msg: string): { kind: 'hard' | 'quota' | 'keyless' | 'outage' | 'transient'; ms: number } {
   const st = e?.response?.status;
   if (/only available on enter\.pollinations\.ai/i.test(msg)) return { kind: 'keyless', ms: 24 * 3600_000 };
+  // Cloudflare's free allowance is per UTC day: rest until it renews instead of retrying every few minutes.
+  if (/daily free allocation|4006|used up your daily/i.test(msg)) return { kind: 'quota', ms: msUntilUtcMidnight() };
   if (st === 401 || st === 402 || st === 403) return { kind: 'hard', ms: 30 * 60_000 }; // locked key / no credit
   if (st === 429) return { kind: 'quota', ms: 5 * 60_000 };
+  if (st === 502 || st === 503 || st === 504) return { kind: 'outage', ms: 3 * 60_000 }; // provider is down: skip it for a bit, don't wait around
   return { kind: 'transient', ms: 0 };
 }

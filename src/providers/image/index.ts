@@ -3,7 +3,7 @@ import { classify, cooldown, coolingFor, recordFail, recordOk, providerStats } f
 import type { ImageProvider, ImageRequest, Tier } from '../types.js';
 import { falSchnell, falKontext } from './fal.js';
 import { geminiImage } from './gemini.js';
-import { cloudflareFlux, cloudflareSdxl } from './cloudflare.js';
+import { cloudflareKlein, cloudflareFlux, cloudflareSdxl, cloudflareBudget, kleinCost, schnellCost } from './cloudflare.js';
 import { together, hfNscale, hfTogether, replicateFlux, replicateKontext, pollinationsFlux, pollinationsKontext } from './others.js';
 
 /**
@@ -11,7 +11,7 @@ import { together, hfNscale, hfTogether, replicateFlux, replicateKontext, pollin
  * Order = preference inside a tier. Tiers: premium > standard > basic.
  */
 export const IMAGE_PROVIDERS: ImageProvider[] = [
-  geminiImage, falSchnell, falKontext, replicateKontext,
+  geminiImage, cloudflareKlein, falSchnell, falKontext, replicateKontext,
   cloudflareFlux, together, hfNscale, hfTogether, replicateFlux, cloudflareSdxl,
   pollinationsFlux, pollinationsKontext,
 ];
@@ -78,7 +78,7 @@ export async function generateImage(req: ImageRequest, opts: { allowBasic?: bool
           if (e.quality) { failures.push(`${p.label}: ${msg}`); break; }
           const c = classify(e, msg);
           if (c.kind !== 'transient') {
-            cooldown(p.id, c.ms, c.kind === 'hard' ? 'credit/auth problem' : c.kind === 'quota' ? 'quota reached' : 'needs an account key');
+            cooldown(p.id, c.ms, c.kind === 'hard' ? 'credit/auth problem' : c.kind === 'quota' ? 'quota reached' : c.kind === 'outage' ? 'provider outage' : 'needs an account key');
             failures.push(`${p.label}: ${msg}`);
             break;
           }
@@ -112,4 +112,38 @@ export function imageProviderStatus(): Array<{ label: string; tier: Tier; state:
       ? { label: p.label, tier: p.tier, state: 'paused' as const, note: `${c.reason}, ${Math.ceil(c.secondsLeft / 60)} min` }
       : { label: p.label, tier: p.tier, state: 'ready' as const, note: `${s.ok} ok / ${s.fail} failed` };
   });
+}
+
+export { cloudflareBudget };
+
+/** Rough "how many videos fit in today's free Cloudflare allowance" for a given scene count (9:16 scenes + a square cover). */
+export function cloudflareVideosLeft(scenes: number): number | null {
+  if (!IMAGE_PROVIDERS.some(p => p.id === 'cf-klein' && p.enabled())) return null;
+  const perVideo = scenes * kleinCost(1024, 1792, 1) + kleinCost(1024, 1024, 0);
+  return Math.floor(cloudflareBudget().left / perVideo);
+}
+export const cloudflareSchnellCost = schnellCost;
+
+/** One tiny real request per configured good provider, so the admin can see what actually works (costs a few neurons/cents). */
+export async function testImageProviders(): Promise<Array<{ label: string; ok: boolean; detail: string }>> {
+  const shape = { w: 512, h: 512, genW: 512, genH: 512, aspect: '1:1' as const };
+  const req: ImageRequest = { prompt: 'A simple red apple on a wooden table, soft daylight, sharp focus', shape, seed: 7 };
+  const out: Array<{ label: string; ok: boolean; detail: string }> = [];
+  for (const p of IMAGE_PROVIDERS) {
+    if (!p.enabled() || p.tier === 'basic' || p.mode === 'ref') continue;
+    const t0 = Date.now();
+    try {
+      const buf = await p.generate(req);
+      if (!isImage(buf)) throw new Error('response was not a valid image');
+      recordOk(p.id);
+      out.push({ label: p.label, ok: true, detail: `${Math.round(buf.length / 1024)} KB in ${((Date.now() - t0) / 1000).toFixed(1)}s` });
+    } catch (e: any) {
+      const msg = describeError(e);
+      recordFail(p.id, msg);
+      const c = classify(e, msg);
+      if (c.kind !== 'transient') cooldown(p.id, c.ms, c.kind === 'hard' ? 'credit/auth problem' : c.kind === 'quota' ? 'quota reached' : 'provider outage');
+      out.push({ label: p.label, ok: false, detail: msg.slice(0, 140) });
+    }
+  }
+  return out;
 }

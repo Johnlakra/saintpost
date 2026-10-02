@@ -5,7 +5,7 @@ import { db } from '../db/index.js';
 import { SaintPostPipeline, PipelineResult, PostPayloadData } from '../engine/pipeline.js';
 import { SaintFetcherService, SaintRecord } from '../data/sanctusFetcher.js';
 import { LENGTHS, LengthId, DEFAULT_LENGTH } from '../config/lengths.js';
-import { imageProviderStatus } from '../providers/image/index.js';
+import { imageProviderStatus, cloudflareBudget, cloudflareVideosLeft, testImageProviders } from '../providers/image/index.js';
 import { getPending, setPending, clearPending } from './state.js';
 import { registerWatermarkMenu, handleLogoUpload, handleWatermarkText } from './watermarkMenu.js';
 
@@ -236,7 +236,8 @@ export function registerMenu(bot: Telegraf<Context>, auth: (ctx: Context, next: 
     const cur = await getLength(uid(ctx));
     await ctx.editMessageText(
       '🎞 Video length\n\n' + (Object.values(LENGTHS) as typeof LENGTHS[LengthId][]).map(l => `${l.id === cur ? '✅ ' : ''}${l.label} (${l.approx}, ${l.scenes} scenes)`).join('\n') +
-      '\n\nLonger videos tell the whole story with more detail but take longer to make and use more image credits. Reels and Shorts both allow up to 3 minutes.',
+      '\n\nLonger videos tell the whole story with more detail but take longer to make and use more image credits. Reels and Shorts both allow up to 3 minutes.' +
+      (cloudflareVideosLeft(LENGTHS[cur].scenes) !== null ? `\n\n☁️ Free Cloudflare images left today: about ${cloudflareVideosLeft(LENGTHS[cur].scenes)} video(s) of this length.` : ''),
       Markup.inlineKeyboard([
         (Object.values(LENGTHS) as typeof LENGTHS[LengthId][]).map(l => Markup.button.callback(`${l.id === cur ? '✅ ' : ''}${l.label} ${l.approx}`, `setlen:${l.id}`)),
         backRow,
@@ -286,10 +287,20 @@ export function registerMenu(bot: Telegraf<Context>, auth: (ctx: Context, next: 
     } catch { /* keep default */ }
     await ctx.editMessageText(
       `📊 STATUS\n\n${dbLine}\n🤖 LLM: ${config.openrouterModel || 'auto (deepseek → free models)'}\n` +
-      `🧰 Image providers:\n${imageProviderStatus().filter(p => p.state !== 'off').map(p => `${p.state === 'ready' ? '🟢' : '⏸'} ${p.label} (${p.tier}) ${p.note}`).join('\n') || 'none configured'}\n🎙️ Voice: ${[config.sarvamApiKey && 'Sarvam', 'Edge neural (Hindi/English)', config.geminiApiKey && 'Gemini TTS', 'Google fallback'].filter(Boolean).join(' → ')}\n🖼️ Images: ${config.falApiKey ? 'fal.ai → ' : ''}HuggingFace → Pollinations\n` +
+      `🧰 Image providers:\n${(config.cloudflareApiToken ? `☁️ Cloudflare free budget today: ~${cloudflareBudget().left.toLocaleString()} of ${cloudflareBudget().total.toLocaleString()} neurons left (renews 00:00 UTC; estimate since last restart)\n` : '')}${imageProviderStatus().filter(p => p.state !== 'off').map(p => `${p.state === 'ready' ? '🟢' : '⏸'} ${p.label} (${p.tier}) ${p.note}`).join('\n') || 'none configured'}\n🎙️ Voice: ${[config.sarvamApiKey && 'Sarvam', 'Edge neural (Hindi/English)', config.geminiApiKey && 'Gemini TTS', 'Google fallback'].filter(Boolean).join(' → ')}\n🖼️ Images: ${config.falApiKey ? 'fal.ai → ' : ''}HuggingFace → Pollinations\n` +
       `⚡ Free mode: ${config.freeMode ? 'on' : 'off'}`,
-      Markup.inlineKeyboard([backRow])
+      Markup.inlineKeyboard([[Markup.button.callback('🧪 Test image providers', 'm:test')], backRow])
     );
+  });
+
+  bot.action('m:test', auth, async ctx => {
+    await ctx.answerCbQuery('Testing…');
+    const msg = await ctx.reply('🧪 Sending one tiny test image to each configured provider…');
+    const results = await testImageProviders();
+    const text = results.length
+      ? results.map(r => `${r.ok ? '✅' : '❌'} ${r.label}: ${r.detail}`).join('\n')
+      : 'No good image provider is configured. Add CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN (free) in Render.';
+    await ctx.telegram.editMessageText(msg.chat.id, msg.message_id, undefined, `🧪 Provider test\n\n${text}`, Markup.inlineKeyboard([backRow])).catch(() => ctx.reply(text));
   });
 
   bot.action('m:help', auth, async ctx => {
