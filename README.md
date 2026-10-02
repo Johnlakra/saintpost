@@ -139,3 +139,12 @@ Cloudflare gives every free account **10,000 neurons per day, renewing at 00:00 
 That is roughly 8 Short, 5 Standard or 3 Long videos per day. The bot's **Status** and **Length** screens show an estimate of what is left.
 
 Setup: sign up at dash.cloudflare.com, open **AI > Workers AI > Use REST API**, copy the **Account ID**, click **Create a Workers AI API token**, then set `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` in Render. Verify with `npm run check:providers` or the bot's **Status > Test image providers** button.
+
+
+## Picture quality: director, checker, inspector
+
+1. **Director** writes a detailed prompt per scene from the documented facts (shot, exact number of people, spatial layout, action, period-accurate place, light).
+2. **Checker** audits each prompt against a physical-logic rulebook (`VISUAL_RULES` in `llmService.ts`: wings only on the angel and never through a person, hands hidden or simple, no overlapping bodies, exact counts, no text) and rewrites risky ones. It also writes a simpler *safe* composition and a must-include checklist.
+3. **Inspector** (`imageQA.ts`) looks at every generated picture with a vision model. On a clear defect it redraws: attempt 2 adds the inspector's fix, attempt 3 uses the safe composition. Anything still flawed is flagged and the video is not auto-published.
+
+Settings: `IMAGE_QA`, `IMAGE_QA_RETRIES`, `GEMINI_VISION_MODEL`, `IMAGE_QA_MODEL`. Each redraw spends one more image from the provider budget. Vision models are imperfect at counting fingers, so this reduces flaws but cannot guarantee none; the prompt rules do most of the work.

@@ -153,7 +153,8 @@ export async function runAndPresent(ctx: Context, saintInput: SaintRecord | stri
     await ctx.reply(
       `🖼 Cover: ${result.coverImageUrl}\n` +
       `🧑 Face reference: ${result.referenceImageUrl || 'none (tap 🖼 Face Photo in the menu to add one)'}\n` +
-      `🎞 ${result.sceneCount} scenes${result.animatedScenes ? `, ${result.animatedScenes} with real motion` : ''}` +
+      `🎞 ${result.sceneCount} scenes${result.animatedScenes ? `, ${result.animatedScenes} with real motion` : ''}\n` +
+      `🔎 Image check: ${result.qa.checked ? `${result.qa.checked} inspected, ${result.qa.retried} redrawn to fix flaws` : 'not available this run (images accepted unchecked)'}` +
       (result.notes.length ? `\n\n⚠️ Quality notes:\n• ${result.notes.join('\n• ')}\nConsider regenerating before you publish.` : '')
     );
   } catch (err: any) {

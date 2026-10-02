@@ -1,0 +1,141 @@
+import axios from 'axios';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import { config } from '../config/env.js';
+import { ffmpeg } from '../utils/media.js';
+import { classify, cooldown, coolingFor } from '../providers/cooldown.js';
+import { describeError } from '../providers/http.js';
+
+export interface QAResult {
+  /** false = no inspector was available (fail-open: the image is accepted unchecked) */
+  checked: boolean;
+  pass: boolean;
+  issues: string[];
+  /** short instruction to avoid the problems on the next attempt */
+  fix: string;
+  engine?: string;
+}
+
+export const qaEnabled = () => process.env.IMAGE_QA !== 'false';
+export const qaRetries = () => Math.max(0, parseInt(process.env.IMAGE_QA_RETRIES || '2', 10));
+
+const INSPECT = (expect: string, mustInclude: string[], people?: number) => `You are a strict inspector of AI-generated artwork for a devotional video. Look carefully at the image.
+
+The picture is supposed to show: ${expect}
+Must be visible: ${mustInclude.length ? mustInclude.join('; ') : 'the subject described above'}
+${people !== undefined ? `Expected number of people/angelic figures: ${people}.` : ''}
+
+Mark a MAJOR problem only for clear defects:
+- a person or angel with extra or missing arms, legs or heads, or fused/merged bodies;
+- a hand that is clearly malformed at normal viewing size (extra hand, six or more fingers, missing or fused fingers, impossible bend);
+- wings, limbs, halos or objects passing THROUGH another person's body (e.g. wings coming out of a human's chest/back that belongs to someone else), or two figures overlapping so they cannot be told apart;
+- a badly distorted or melted face;
+- readable text, letters or a watermark;
+- the picture clearly does not show the subject it is supposed to (wrong or missing main subject).
+Ignore tiny background flaws and small hands that are barely visible (minor).
+
+Respond ONLY with JSON: {"pass": true|false, "severity": "none"|"minor"|"major", "issues": ["short description of each major problem"], "fix": "one short instruction for the next attempt, e.g. 'hide the hands, keep the angel clearly behind the girl with a gap'"}. pass must be false only when severity is "major".`;
+
+/** Downscale to a small JPEG for the inspector (cheap and fast). */
+async function smallJpeg(imagePath: string): Promise<string> {
+  const out = path.join(os.tmpdir(), `qa_${Date.now()}_${Math.random().toString(36).slice(2)}.jpg`);
+  try {
+    await ffmpeg(['-i', imagePath, '-vf', 'scale=768:768:force_original_aspect_ratio=decrease', '-frames:v', '1', '-q:v', '4', out]);
+    return fs.readFileSync(out).toString('base64');
+  } finally {
+    fs.rmSync(out, { force: true });
+  }
+}
+
+const parse = (text: string): { pass: boolean; severity: string; issues: string[]; fix: string } => {
+  const m = text.replace(/```json|```/g, '').match(/\{[\s\S]*\}/);
+  if (!m) throw new Error('inspector did not return JSON');
+  const j = JSON.parse(m[0]);
+  const major = j.severity === 'major' || j.pass === false;
+  return { pass: !major, severity: String(j.severity || ''), issues: Array.isArray(j.issues) ? j.issues.map(String) : [], fix: String(j.fix || '') };
+};
+
+/** Gemini vision (text/vision models have a real free tier, unlike the image-generation models). */
+async function geminiInspect(b64: string, prompt: string): Promise<string> {
+  const model = process.env.GEMINI_VISION_MODEL || 'gemini-2.5-flash';
+  const res = await axios.post(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+    {
+      contents: [{ parts: [{ inline_data: { mime_type: 'image/jpeg', data: b64 } }, { text: prompt }] }],
+      generationConfig: { temperature: 0, responseMimeType: 'application/json' },
+    },
+    { headers: { 'x-goog-api-key': config.geminiApiKey }, timeout: 60000 }
+  );
+  const text = res.data?.candidates?.[0]?.content?.parts?.map((p: any) => p.text).filter(Boolean).join('');
+  if (!text) throw new Error('empty inspector response');
+  return text;
+}
+
+/** OpenRouter vision models: IMAGE_QA_MODEL if set, else any currently-live free model that accepts images. */
+let visionModels: { at: number; ids: string[] } | null = null;
+async function openRouterVisionModels(): Promise<string[]> {
+  if (process.env.IMAGE_QA_MODEL) return [process.env.IMAGE_QA_MODEL];
+  if (visionModels && Date.now() - visionModels.at < 3600_000) return visionModels.ids;
+  const res = await axios.get('https://openrouter.ai/api/v1/models', { timeout: 20000 });
+  const pref = /gemini|gemma-3|qwen.*vl|pixtral|llama.*vision|mistral-small/i;
+  const ids: string[] = (res.data?.data || [])
+    .filter((m: any) => m.architecture?.input_modalities?.includes('image') && m.id.endsWith(':free'))
+    .sort((a: any, b: any) => Number(pref.test(b.id)) - Number(pref.test(a.id)))
+    .map((m: any) => m.id)
+    .slice(0, 4);
+  visionModels = { at: Date.now(), ids };
+  return ids;
+}
+async function openRouterInspect(b64: string, prompt: string): Promise<{ text: string; model: string }> {
+  let last: any;
+  for (const model of await openRouterVisionModels()) {
+    if (coolingFor(`qa:${model}`)) continue;
+    try {
+      const res = await axios.post(
+        'https://openrouter.ai/api/v1/chat/completions',
+        { model, temperature: 0, messages: [{ role: 'user', content: [{ type: 'text', text: prompt }, { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${b64}` } }] }] },
+        { headers: { Authorization: `Bearer ${config.openrouterApiKey}`, 'HTTP-Referer': config.renderExternalUrl, 'X-Title': 'SaintPost' }, timeout: 90000 }
+      );
+      const text = res.data?.choices?.[0]?.message?.content;
+      if (text) return { text: String(text), model };
+    } catch (e: any) {
+      last = e;
+      cooldown(`qa:${model}`, 10 * 60_000, 'vision model unavailable');
+    }
+  }
+  throw last || new Error('no vision model available');
+}
+
+/**
+ * Look at a generated image and decide whether it is logical and clean. FAIL-OPEN: if no inspector can be reached,
+ * the image is accepted (checked:false) so a QA outage never blocks a video.
+ */
+export async function inspectImage(imagePath: string, expect: string, mustInclude: string[] = [], people?: number): Promise<QAResult> {
+  const open: QAResult = { checked: false, pass: true, issues: [], fix: '' };
+  if (!qaEnabled()) return open;
+  const prompt = INSPECT(expect, mustInclude, people);
+  let b64: string;
+  try { b64 = await smallJpeg(imagePath); } catch (e: any) { console.warn('     ⚠️ QA could not read the image:', e.message); return open; }
+
+  if (config.geminiApiKey && !coolingFor('qa:gemini')) {
+    try {
+      const r = parse(await geminiInspect(b64, prompt));
+      return { checked: true, ...r, engine: 'Gemini vision' };
+    } catch (e: any) {
+      const msg = describeError(e);
+      console.warn(`     ⚠️ Gemini vision QA failed: ${msg}`);
+      const c = classify(e, msg);
+      cooldown('qa:gemini', c.kind === 'transient' ? 2 * 60_000 : c.ms, 'QA unavailable');
+    }
+  }
+  if (config.openrouterApiKey) {
+    try {
+      const out = await openRouterInspect(b64, prompt);
+      return { checked: true, ...parse(out.text), engine: `OpenRouter ${out.model}` };
+    } catch (e: any) {
+      console.warn(`     ⚠️ OpenRouter vision QA failed: ${describeError(e)}`);
+    }
+  }
+  return open;
+}
