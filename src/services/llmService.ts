@@ -330,8 +330,8 @@ Respond ONLY with a JSON object: {"lines": [${scenes.length} strings in the same
     for (const model of modelsToTry) {
       // An explicit max_tokens keeps the request affordable on a small balance (OpenRouter otherwise reserves the
       // model's maximum) and caps runaway output.
-      const maxTokens = opts.maxTokens ?? config.openrouterMaxTokens;
-      const json = !!opts.json;
+      let maxTokens = opts.maxTokens ?? config.openrouterMaxTokens;
+      let json = !!opts.json;
       for (let attempt = 1; attempt <= 3; attempt++) {
         try {
           console.log(`🤖 Querying LLM via OpenRouter model: ${model}...`);
@@ -343,9 +343,6 @@ Respond ONLY with a JSON object: {"lines": [${scenes.length} strings in the same
               temperature,
               max_tokens: maxTokens,
               ...(json ? { response_format: { type: 'json_object' } } : {}),
-            },
-            {
-              headers: {
             },
             {
               headers: {
