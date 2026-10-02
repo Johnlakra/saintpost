@@ -35,6 +35,8 @@ export function classify(e: any, msg: string): { kind: 'hard' | 'quota' | 'keyle
   // Cloudflare's free allowance is per UTC day: rest until it renews instead of retrying every few minutes.
   if (/daily free allocation|4006|used up your daily/i.test(msg)) return { kind: 'quota', ms: msUntilUtcMidnight() };
   if (st === 401 || st === 402 || st === 403) return { kind: 'hard', ms: 30 * 60_000 }; // locked key / no credit
+  // "check your plan and billing" = this key has NO quota for this model at all (not a rate limit): rest 6 h.
+  if (st === 429 && /plan and billing|billing details/i.test(msg)) return { kind: 'quota', ms: 6 * 3600_000 };
   if (st === 429) return { kind: 'quota', ms: 5 * 60_000 };
   if (st === 502 || st === 503 || st === 504) return { kind: 'outage', ms: 3 * 60_000 }; // provider is down: skip it for a bit, don't wait around
   return { kind: 'transient', ms: 0 };

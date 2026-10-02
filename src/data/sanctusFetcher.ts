@@ -26,6 +26,7 @@ export interface SaintRecord {
   symbols?: string[];
   facts?: string; // documented biography used to ground all generated content
   reference_image_url?: string; // documented photo/portrait used as the face reference
+  dossier?: any; // cached fact sheet + casting sheet (see LLMService.getDossier)
   appearance?: string; // how to draw the saint consistently (age, gender, hair, period clothing)
 }
 

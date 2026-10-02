@@ -130,28 +130,39 @@ export class SaintPostPipeline {
     // STEP 1a: documented facts + documented photo (cached on the saint row)
     await this.factService.ensureFacts(saint);
 
-    // STEP 1b: casting sheet (age/gender/clothing) so every scene shows the right person
+    // STEP 1b: cached fact sheet + casting sheet (one LLM call per saint, ever). Regenerating or making another
+    // language/length of the same saint reuses it, so the long source text is not re-read.
     await db.query(`ALTER TABLE saints ADD COLUMN IF NOT EXISTS appearance TEXT`).catch(() => {});
-    saint.appearance = await this.llmService.getAppearance(saint);
-    if (saint.appearance) {
-      console.log(`🧑 Appearance: ${saint.appearance}`);
-      console.log(`🖼️ Face reference: ${saint.reference_image_url || 'none (text-only, appearance from documented facts)'}`);
-      if (saint.id) db.query(`UPDATE saints SET appearance = $2 WHERE id = $1`, [saint.id, saint.appearance]).catch(() => {});
+    await db.query(`ALTER TABLE saints ADD COLUMN IF NOT EXISTS dossier JSONB`).catch(() => {});
+    const dossier = await this.llmService.getDossier(saint);
+    if (dossier) {
+      saint.dossier = dossier;
+      saint.appearance = dossier.appearance || '';
+      if (saint.id) db.query(`UPDATE saints SET dossier = $2, appearance = $3 WHERE id = $1`, [saint.id, JSON.stringify(dossier), saint.appearance]).catch(() => {});
     }
+    if (saint.appearance) console.log(`🧑 Appearance: ${saint.appearance}`);
+    console.log(`🖼️ Face reference: ${saint.reference_image_url || 'none (text-only, appearance from documented facts)'}`);
 
-    // STEP 2: GENERATE CONTENT (LLM in Target Language)
+    // STEP 2: GENERATE CONTENT (LLM in Target Language): script + caption + hashtags (+ Hinglish/Pinglish subtitles) in ONE call
     const preset = LENGTHS[opts.length || DEFAULT_LENGTH];
+    const wantRoman = targetLang !== 'en' && (await this.subtitleMode()) === 'roman';
     progress(`✍️ Writing a ${preset.label.toLowerCase()} script (${preset.approx}, ${preset.scenes} scenes)...`);
-    const content = await this.llmService.generateSaintContentPackage(saint, targetLang, preset);
+    const content = await this.llmService.generateSaintContentPackage(saint, targetLang, preset, dossier, { roman: wantRoman });
     console.log(`✅ Step 2: LLM Content Generated (${content.video_script.length} scenes in ${targetLang.toUpperCase()})`);
     progress('✍️ Script written. Designing detailed scenes...');
 
-    // STEP 2a: Hinglish / Pinglish subtitles for Hindi & Punjabi (voice stays native; only the on-screen text is romanized)
-    if (targetLang !== 'en' && (await this.subtitleMode()) === 'roman') {
-      const roman = await this.llmService.romanizeScenes(content.video_script, targetLang);
-      content.video_script.forEach((sc, i) => { sc.subtitle = roman[i]; });
+    // STEP 2a: subtitles normally arrive inside the script call; only if some are missing do we spend another call
+    if (wantRoman) {
+      if (content.video_script.some(sc => !sc.subtitle)) {
+        const roman = await this.llmService.romanizeScenes(content.video_script, targetLang as 'hi' | 'pa');
+        content.video_script.forEach((sc, i) => { if (!sc.subtitle) sc.subtitle = roman[i]; });
+      }
       console.log(`✅ Step 2a: ${targetLang === 'hi' ? 'Hinglish' : 'Pinglish'} subtitles ready`);
     }
+
+    // Narration can be recorded while the pictures are being painted (it only needs the script)
+    const audiosPromise = this.ttsService.generateSceneVoiceovers(content.video_script.map(sc => sc.voiceover), saint.name, targetLang);
+    audiosPromise.catch(() => undefined); // awaited later; avoid an unhandled rejection if images fail first
 
     // STEP 2b: fact-grounded detailed image prompts (saint dossier + the day's feast)
     const brief = await this.llmService.buildVisualBrief(saint, content.video_script, {
@@ -159,13 +170,15 @@ export class SaintPostPipeline {
       rank: saint.rank,
       color: saint.liturgical_color,
       martyrology: (saint as any).source_text || saint.short_description,
-    });
+    }, dossier);
     if (brief) {
       content.video_script.forEach((sc, i) => {
         const b = brief.scenes[i];
         sc.image_prompt = b.prompt;
         sc.safe_prompt = b.safe || undefined;
         sc.must_include = b.mustInclude;
+        sc.risk = b.risk;
+        sc.uses_main = b.usesMain;
       });
     }
     console.log(`✅ Step 2b: Visual brief ${brief ? 'built for ' + brief.scenes.length + ' scenes' : 'skipped (using basic visuals)'}`);
@@ -192,11 +205,7 @@ export class SaintPostPipeline {
 
     // STEP 5: GENERATE PER-SCENE VOICEOVER (neural TTS). Video timing is driven by the audio.
     const scenes = content.video_script;
-    const audios = await this.ttsService.generateSceneVoiceovers(
-      scenes.map(sc => sc.voiceover),
-      saint.name,
-      targetLang
-    );
+    const audios = await audiosPromise;
     console.log(`✅ Step 5: ${audios.length} scene voiceovers generated (${targetLang.toUpperCase()})`);
     progress('🎞️ Animating scenes...');
 

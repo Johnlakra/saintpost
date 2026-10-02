@@ -6,6 +6,7 @@ import { config } from '../config/env.js';
 import { ffmpeg } from '../utils/media.js';
 import { classify, cooldown, coolingFor } from '../providers/cooldown.js';
 import { describeError } from '../providers/http.js';
+import { geminiModelCandidates, forgetGeminiModels } from '../providers/geminiModels.js';
 
 export interface QAResult {
   /** false = no inspector was available (fail-open: the image is accepted unchecked) */
@@ -18,24 +19,22 @@ export interface QAResult {
 }
 
 export const qaEnabled = () => process.env.IMAGE_QA !== 'false';
-export const qaRetries = () => Math.max(0, parseInt(process.env.IMAGE_QA_RETRIES || '2', 10));
+export const qaRetries = () => Math.max(0, parseInt(process.env.IMAGE_QA_RETRIES || '1', 10));
 
-const INSPECT = (expect: string, mustInclude: string[], people?: number) => `You are a strict inspector of AI-generated artwork for a devotional video. Look carefully at the image.
+const INSPECT = (subject: string, mustInclude: string[]) => `You inspect AI-generated artwork for a devotional video. Judge ONLY the defects listed below; do not judge style, camera shot, pose, clothing details, hand positions or small missing props.
 
-The picture is supposed to show: ${expect}
-Must be visible: ${mustInclude.length ? mustInclude.join('; ') : 'the subject described above'}
-${people !== undefined ? `Expected number of people/angelic figures: ${people}.` : ''}
+Subject: ${subject}
+${mustInclude.length ? `Main things that should be visible: ${mustInclude.join('; ')}` : ''}
 
-Mark a MAJOR problem only for clear defects:
-- a person or angel with extra or missing arms, legs or heads, or fused/merged bodies;
-- a hand that is clearly malformed at normal viewing size (extra hand, six or more fingers, missing or fused fingers, impossible bend);
-- wings, limbs, halos or objects passing THROUGH another person's body (e.g. wings coming out of a human's chest/back that belongs to someone else), or two figures overlapping so they cannot be told apart;
+MAJOR defects (fail only for these):
+- extra or missing arms, legs or heads; two bodies fused into one;
+- a hand clearly malformed at normal viewing size (extra hand, 6+ fingers, fused or missing fingers);
+- wings, limbs or objects passing THROUGH another person's body, or figures overlapping so they cannot be told apart;
 - a badly distorted or melted face;
 - readable text, letters or a watermark;
-- the picture clearly does not show the subject it is supposed to (wrong or missing main subject).
-Ignore tiny background flaws and small hands that are barely visible (minor).
+- the main subject is clearly absent or wrong (e.g. a different kind of figure than the subject).
 
-Respond ONLY with JSON: {"pass": true|false, "severity": "none"|"minor"|"major", "issues": ["short description of each major problem"], "fix": "one short instruction for the next attempt, e.g. 'hide the hands, keep the angel clearly behind the girl with a gap'"}. pass must be false only when severity is "major".`;
+JSON only: {"pass": true|false, "severity": "none"|"minor"|"major", "issues": ["each major defect, briefly"], "fix": "one short instruction to avoid them next time, e.g. 'hide the hands; keep the angel clearly behind the girl with a gap'"}. pass=false only if severity is "major".`;
 
 /** Downscale to a small JPEG for the inspector (cheap and fast). */
 async function smallJpeg(imagePath: string): Promise<string> {
@@ -58,18 +57,27 @@ const parse = (text: string): { pass: boolean; severity: string; issues: string[
 
 /** Gemini vision (text/vision models have a real free tier, unlike the image-generation models). */
 async function geminiInspect(b64: string, prompt: string): Promise<string> {
-  const model = process.env.GEMINI_VISION_MODEL || 'gemini-2.5-flash';
-  const res = await axios.post(
-    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
-    {
-      contents: [{ parts: [{ inline_data: { mime_type: 'image/jpeg', data: b64 } }, { text: prompt }] }],
-      generationConfig: { temperature: 0, responseMimeType: 'application/json' },
-    },
-    { headers: { 'x-goog-api-key': config.geminiApiKey }, timeout: 60000 }
-  );
-  const text = res.data?.candidates?.[0]?.content?.parts?.map((p: any) => p.text).filter(Boolean).join('');
-  if (!text) throw new Error('empty inspector response');
-  return text;
+  let last: any;
+  for (const model of await geminiModelCandidates('vision')) {
+    try {
+      const res = await axios.post(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+        {
+          contents: [{ parts: [{ inline_data: { mime_type: 'image/jpeg', data: b64 } }, { text: prompt }] }],
+          generationConfig: { temperature: 0, responseMimeType: 'application/json' },
+        },
+        { headers: { 'x-goog-api-key': config.geminiApiKey }, timeout: 60000 }
+      );
+      const text = res.data?.candidates?.[0]?.content?.parts?.map((p: any) => p.text).filter(Boolean).join('');
+      if (!text) throw new Error('empty inspector response');
+      return text;
+    } catch (e: any) {
+      last = e;
+      if (e.response?.status !== 404) throw e;
+      forgetGeminiModels(); // retired name: try the next candidate / re-discover
+    }
+  }
+  throw last;
 }
 
 /** OpenRouter vision models: IMAGE_QA_MODEL if set, else any currently-live free model that accepts images. */
@@ -111,10 +119,10 @@ async function openRouterInspect(b64: string, prompt: string): Promise<{ text: s
  * Look at a generated image and decide whether it is logical and clean. FAIL-OPEN: if no inspector can be reached,
  * the image is accepted (checked:false) so a QA outage never blocks a video.
  */
-export async function inspectImage(imagePath: string, expect: string, mustInclude: string[] = [], people?: number): Promise<QAResult> {
+export async function inspectImage(imagePath: string, subject: string, mustInclude: string[] = []): Promise<QAResult> {
   const open: QAResult = { checked: false, pass: true, issues: [], fix: '' };
   if (!qaEnabled()) return open;
-  const prompt = INSPECT(expect, mustInclude, people);
+  const prompt = INSPECT(subject, mustInclude);
   let b64: string;
   try { b64 = await smallJpeg(imagePath); } catch (e: any) { console.warn('     ⚠️ QA could not read the image:', e.message); return open; }
 
