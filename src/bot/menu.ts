@@ -9,6 +9,7 @@ import { imageProviderStatus, cloudflareBudget, cloudflareVideosLeft, testImageP
 import { getPending, setPending, clearPending } from './state.js';
 import { registerWatermarkMenu, handleLogoUpload, handleWatermarkText } from './watermarkMenu.js';
 
+import { LLMService } from '../services/llmService.js';
 import { Lang, LANG_LABEL, getPreview, sendPreview } from './present.js';
 import { registerEditMenu, handleEditText } from './editMenu.js';
 
@@ -259,8 +260,10 @@ export function registerMenu(bot: Telegraf<Context>, auth: (ctx: Context, next: 
       const a = await db.query(`SELECT count(*) FILTER (WHERE is_active)::int AS on_, count(*)::int AS n FROM accounts`);
       dbLine = `🟢 Database: ${r.rows[0].n} saints (${r.rows[0].e} enriched), ${a.rows[0].on_}/${a.rows[0].n} accounts active`;
     } catch { /* keep default */ }
+    const cr = await LLMService.getCredit();
+    const creditLine = cr ? (cr.remaining !== null ? `💳 OpenRouter credit left: $${cr.remaining.toFixed(2)}${cr.remaining < 0.05 ? '  ⚠️ too low — add credit or raise the key limit (openrouter.ai/settings/keys)' : ''}\n` : `💳 OpenRouter: ${cr.used !== null ? `$${cr.used.toFixed(2)} used (no spending limit set)` : 'connected'}\n`) : '';
     await ctx.editMessageText(
-      `📊 STATUS\n\n${dbLine}\n🤖 LLM: ${config.openrouterModel || 'auto (deepseek → free models)'}\n` +
+      `📊 STATUS\n\n${dbLine}\n${creditLine}🤖 LLM: ${config.openrouterModel || 'auto (deepseek → free models)'}\n` +
       `🧰 Image providers:\n${(config.cloudflareApiToken ? `☁️ Cloudflare free budget today: ~${cloudflareBudget().left.toLocaleString()} of ${cloudflareBudget().total.toLocaleString()} neurons left (renews 00:00 UTC; estimate since last restart)\n` : '')}${imageProviderStatus().filter(p => p.state !== 'off').map(p => `${p.state === 'ready' ? '🟢' : '⏸'} ${p.label} (${p.tier}) ${p.note}`).join('\n') || 'none configured'}\n🎙️ Voice: ${[config.sarvamApiKey && 'Sarvam', 'Edge neural (Hindi/English)', config.geminiApiKey && 'Gemini TTS', 'Google fallback'].filter(Boolean).join(' → ')}\n🖼️ Images: ${config.falApiKey ? 'fal.ai → ' : ''}HuggingFace → Pollinations\n` +
       `⚡ Free mode: ${config.freeMode ? 'on' : 'off'}`,
       Markup.inlineKeyboard([[Markup.button.callback('🧪 Test image providers', 'm:test')], backRow])

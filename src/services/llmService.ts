@@ -376,6 +376,16 @@ Respond ONLY with JSON: {"scenes": [{"voiceover": "...", "overlay": "..."${roman
       .trim();
   }
 
+  /** Remaining OpenRouter credit in dollars (null when it cannot be read or the key has no limit). */
+  static async getCredit(): Promise<{ remaining: number | null; used: number | null; freeTier: boolean } | null> {
+    if (!config.openrouterApiKey) return null;
+    try {
+      const res = await axios.get('https://openrouter.ai/api/v1/key', { headers: { Authorization: `Bearer ${config.openrouterApiKey}` }, timeout: 15000 });
+      const d = res.data?.data || {};
+      return { remaining: typeof d.limit_remaining === 'number' ? d.limit_remaining : null, used: typeof d.usage === 'number' ? d.usage : null, freeTier: !!d.is_free_tier };
+    } catch { return null; }
+  }
+
   /** Generic JSON completion used by maintenance scripts (db:enrich). */
   async completeJson(prompt: string, temperature = 0.7, maxTokens = 3000): Promise<any> {
     let lastErr: any;
@@ -420,10 +430,13 @@ Respond ONLY with JSON: {"scenes": [{"voiceover": "...", "overlay": "..."${roman
     const modelsToTry = await this.resolveModels(modelOverride);
     if (modelsToTry.length === 0) throw new Error('No usable OpenRouter models found (check OPENROUTER_MODEL / key credits).');
 
+    let lowCredit: number | null = null; // tokens the account can still afford, when OpenRouter says so
     for (const model of modelsToTry) {
       // An explicit max_tokens keeps the request affordable on a small balance (OpenRouter otherwise reserves the
       // model's maximum) and caps runaway output.
       let maxTokens = opts.maxTokens ?? config.openrouterMaxTokens;
+      // free models cost nothing, and many are "thinking" models that spend part of the limit on hidden reasoning: give them room
+      if (model.endsWith(':free')) maxTokens = Math.max(maxTokens * 3, 6000);
       let json = !!opts.json;
       for (let attempt = 1; attempt <= 3; attempt++) {
         try {
@@ -449,6 +462,7 @@ Respond ONLY with JSON: {"scenes": [{"voiceover": "...", "overlay": "..."${roman
           );
           const text = response.data?.choices?.[0]?.message?.content;
           if (text) return String(text).trim();
+          console.warn(`⚠️ ${model} returned no text (finish_reason: ${response.data?.choices?.[0]?.finish_reason || 'unknown'}; it may have used the whole limit on hidden reasoning). Trying the next model.`);
           break;
         } catch (err: any) {
           const detail: string = err.response?.data?.error?.message || err.message;
@@ -465,6 +479,7 @@ Respond ONLY with JSON: {"scenes": [{"voiceover": "...", "overlay": "..."${roman
           }
           if (json && status === 400 && /response_format|json/i.test(detail)) { json = false; continue; } // model has no JSON mode
           console.warn(`⚠️ OpenRouter error on model ${model}: ${detail}`);
+          if (afford) lowCredit = Math.max(lowCredit ?? 0, parseInt(afford[1], 10));
           if (status === 402 || afford) cooldown(`llm:${model}`, 10 * 60_000, 'low OpenRouter credit');
           else if (status && status !== 429 && status < 500) this.badModels.add(model);
           break;
@@ -472,6 +487,9 @@ Respond ONLY with JSON: {"scenes": [{"voiceover": "...", "overlay": "..."${roman
       }
     }
 
+    if (lowCredit !== null) {
+      throw new Error(`Your OpenRouter balance is almost empty (it can only pay for about ${lowCredit} more tokens, and one video needs roughly 10,000-20,000). Either add a few dollars at openrouter.ai/credits, or raise this API key's spending limit at openrouter.ai/settings/keys (OpenRouter's own message points to the key's total limit), then try again. The free models were tried too, but they could not produce a valid script.`);
+    }
     throw new Error('All OpenRouter models failed to respond. If your OpenRouter balance is low, add credit at openrouter.ai/credits.');
   }
 

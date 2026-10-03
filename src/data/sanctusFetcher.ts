@@ -168,14 +168,26 @@ export class SaintFetcherService {
   async getSaintByName(name: string): Promise<SaintRecord> {
     console.log(`🔍 Searching for saint by name: "${name}"...`);
 
-    // Check DB
+    // Check DB: exact-ish match first, then a word-by-word match so "the three archangels" finds
+    // "Sts. Michael, Gabriel and Raphael, Archangels" (names are rarely typed exactly as stored).
     try {
-      const res = await db.query(
-        `SELECT * FROM saints WHERE name ILIKE $1 LIMIT 1`,
-        [`%${name}%`]
-      );
-      if (res.rows.length > 0) {
-        return res.rows[0];
+      const res = await db.query(`SELECT * FROM saints WHERE name ILIKE $1 ORDER BY enriched DESC NULLS LAST, id LIMIT 1`, [`%${name}%`]);
+      if (res.rows.length > 0) return res.rows[0];
+
+      const stop = new Set(['the', 'saint', 'saints', 'feast', 'memorial', 'day', 'and', 'of', 'our', 'holy', 'blessed', 'one', 'two', 'three', 'four', 'five', 'seven', 'twelve', 'great']);
+      const words = name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').split(/[^a-z]+/).filter(w => w.length >= 4 && !stop.has(w));
+      const stems = [...new Set(words.map(w => w.replace(/(es|s)$/, '')))].filter(w => w.length >= 4);
+      if (stems.length) {
+        const cand = await db.query(`SELECT * FROM saints WHERE name ILIKE ANY($1) ORDER BY id LIMIT 40`, [stems.map(w => `%${w}%`)]);
+        const score = (row: any) => stems.filter(w => String(row.name).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').includes(w)).length;
+        const ranked = [...cand.rows].sort((a, b) => score(b) - score(a) || (b.enriched ? 1 : 0) - (a.enriched ? 1 : 0));
+        const best = ranked[0];
+        // accept when most typed words matched AND no other saint matches equally well (a common word like "john" must not pick a random one)
+        const ambiguous = ranked.length > 1 && score(ranked[1]) === score(best) && ranked[1].name !== best.name;
+        if (best && !ambiguous && score(best) >= Math.max(1, Math.ceil(stems.length * 0.6))) {
+          console.log(`🔎 "${name}" matched "${best.name}" in the database.`);
+          return best;
+        }
       }
     } catch (e) {}
 
