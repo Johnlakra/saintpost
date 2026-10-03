@@ -180,3 +180,8 @@ Open it from the video's **✏️ Edit this video** button or **/menu -> 📂 My
 Already-published posts cannot be swapped by the Instagram/YouTube APIs: publish the edited version as a new post and remove the old one on the platform.
 
 How an in-place picture edit works: the current picture is sent as the reference to an instruction-following image model (FLUX.2 klein on Cloudflare, Gemini image, or FLUX Kontext) with "change only X, keep everything else exactly the same", the best-practice way to edit without disturbing the rest. It never falls back to a text-only model (that would invent a different picture); if no reference-capable provider works or the inspector rejects the result, it redraws from an updated prompt instead.
+
+
+## Text AI providers (free first)
+
+All text generation (fact sheet, script, image prompts, translations, enrichment) goes through one chain with identical prompts and JSON handling: **Gemini (free tier) -> Groq (free tier) -> OpenRouter (paid)**. Set `GEMINI_API_KEY` (the same key already used for images/TTS) and optionally `GROQ_API_KEY`; OpenRouter becomes the last resort and can be left unset. Model names are discovered from each provider's live list, a model that hits its daily free quota is rested for hours, and the next provider takes over automatically. Free tiers are capacity the providers do not guarantee and may change; Google may use free-tier requests to improve its products (the content here is public information about saints). `LLM_PROVIDERS` changes the order.

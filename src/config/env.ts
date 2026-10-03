@@ -19,6 +19,9 @@ export const config = {
 
   // AI Content Models (OpenRouter / Free Tier)
   openrouterApiKey: process.env.OPENROUTER_API_KEY || '',
+  // Free-first text models: tried in this order (comma list). Only providers with a key are used.
+  llmProviders: (process.env.LLM_PROVIDERS || 'gemini,groq,openrouter').split(',').map(x => x.trim().toLowerCase()).filter(Boolean),
+  groqApiKey: process.env.GROQ_API_KEY || '',
   openrouterModel: process.env.OPENROUTER_MODEL || '',
   openrouterMaxTokens: Number(process.env.OPENROUTER_MAX_TOKENS) || 10000,
   // Extra free-tier image providers (all optional)

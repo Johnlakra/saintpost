@@ -1,6 +1,8 @@
 import axios from 'axios';
 import { jsonrepair } from 'jsonrepair';
-import { cooldown, coolingFor } from '../providers/cooldown.js';
+import { cooldown, coolingFor, classify } from '../providers/cooldown.js';
+import { geminiModelCandidates, forgetGeminiModels } from '../providers/geminiModels.js';
+import { describeError } from '../providers/http.js';
 import { config } from '../config/env.js';
 import { SaintRecord } from '../data/sanctusFetcher.js';
 import { romanizeFallback } from '../utils/romanize.js';
@@ -103,6 +105,11 @@ export class LLMService {
   private primaryModel: string;
   private badModels = new Set<string>(); // models that hard-failed (404/400/403): don't retry them this run
 
+  /** True when at least one text provider (Gemini, Groq or OpenRouter) has a key. */
+  private llmAvailable(): boolean {
+    return !!(config.geminiApiKey || config.groqApiKey || this.openrouterApiKey);
+  }
+
   constructor() {
     this.openrouterApiKey = config.openrouterApiKey;
     this.primaryModel = config.openrouterModel;
@@ -151,7 +158,7 @@ export class LLMService {
     const key = `${saint.name}|${(saint.facts || '').length}`;
     const cached = this.dossiers.get(key) || (isDossier(saint.dossier) ? saint.dossier : null);
     if (cached) { this.dossiers.set(key, cached); return cached; }
-    if (config.dryRun || !this.openrouterApiKey) return null;
+    if (config.dryRun || !this.llmAvailable()) return null;
     const sourceText = (saint.facts || saint.short_description || 'No source available - say only what is certain about this saint.').slice(0, 9000);
     const d = await this.completeJson(`You are a careful Catholic historian and teacher. Prepare a reusable fact sheet about "${saint.name}" for a video aimed at a wide audience, including people who know nothing about saints.
 
@@ -199,7 +206,7 @@ Respond ONLY with JSON.`, 0.2, 3200);
     feast: { dateLabel: string; rank?: string; color?: string; martyrology?: string },
     facts: Dossier | null = null
   ): Promise<VisualBrief | null> {
-    if (config.dryRun || !this.openrouterApiKey) return null;
+    if (config.dryRun || !this.llmAvailable()) return null;
     try {
       const dossier = `SUBJECT DOSSIER
 Name: ${saint.name}
@@ -283,7 +290,7 @@ Saint appearance (fixed): ${saint.appearance || 'n/a (the subject is not one per
   async romanizeScenes(scenes: SceneScript[], lang: 'hi' | 'pa'): Promise<string[]> {
     const name = lang === 'hi' ? 'Hinglish (Hindi written in English letters)' : 'Pinglish (Punjabi written in English letters)';
     try {
-      if (config.dryRun || !this.openrouterApiKey) throw new Error('LLM disabled');
+      if (config.dryRun || !this.llmAvailable()) throw new Error('LLM disabled');
       const out = await this.completeJson(`Transliterate each line into natural ${name}, exactly as a young Indian would type it on WhatsApp.
 
 Rules:
@@ -390,7 +397,7 @@ Respond ONLY with JSON: {"scenes": [{"voiceover": "...", "overlay": "..."${roman
   async completeJson(prompt: string, temperature = 0.7, maxTokens = 3000): Promise<any> {
     let lastErr: any;
     for (let attempt = 1; attempt <= 2; attempt++) {
-      const text = await this.queryOpenRouter(
+      const text = await this.queryLLM(
         attempt === 1 ? prompt : `${prompt}\n\nIMPORTANT: your previous answer was not valid JSON. Answer again with strictly valid JSON only: double quotes, no comments, no trailing commas, no text outside the JSON.`,
         undefined, attempt === 1 ? temperature : Math.min(temperature, 0.2), { maxTokens, json: true }
       );
@@ -411,6 +418,115 @@ Respond ONLY with JSON: {"scenes": [{"voiceover": "...", "overlay": "..."${roman
     if (!m) throw new Error('LLM did not return JSON');
     try { return JSON.parse(m[0]); } catch { /* try to repair */ }
     return JSON.parse(jsonrepair(m[0]));
+  }
+
+  /**
+   * Text generation with a provider chain, free first: Gemini (free tier) -> Groq (free tier) -> OpenRouter (paid).
+   * Same prompts, same JSON handling everywhere; only the engine differs. Order: LLM_PROVIDERS.
+   */
+  private async queryLLM(prompt: string, modelOverride: string | undefined, temperature: number, opts: { maxTokens?: number; json?: boolean } = {}): Promise<string> {
+    const attempts: Record<string, () => Promise<string>> = {
+      gemini: () => this.queryGemini(prompt, temperature, opts),
+      groq: () => this.queryGroq(prompt, temperature, opts),
+      openrouter: () => this.queryOpenRouter(prompt, modelOverride, temperature, opts),
+    };
+    const have: Record<string, boolean> = { gemini: !!config.geminiApiKey, groq: !!config.groqApiKey, openrouter: !!this.openrouterApiKey };
+    const order = config.llmProviders.filter(p => attempts[p] && have[p]);
+    if (!order.length) throw new Error('No text AI provider is configured: set GEMINI_API_KEY (free), GROQ_API_KEY (free) or OPENROUTER_API_KEY.');
+    const errors: string[] = [];
+    for (const name of order) {
+      try {
+        const text = await attempts[name]();
+        if (text) return text;
+        errors.push(`${name}: empty reply`);
+      } catch (e: any) {
+        errors.push(`${name}: ${e.message}`);
+        console.warn(`⚠️ ${name} text provider failed, trying the next one: ${String(e.message).slice(0, 160)}`);
+      }
+    }
+    // OpenRouter's low-balance message is the most useful thing to show when everything else also failed
+    const credit = errors.find(m => /balance is almost empty/.test(m));
+    throw new Error(credit ? credit.replace(/^openrouter: /, '') : `All text AI providers failed: ${errors.join(' | ').slice(0, 600)}`);
+  }
+
+  /** Google Gemini text (free tier; strong Hindi/Punjabi). Tries the newest flash, then lite, then older ones. */
+  private async queryGemini(prompt: string, temperature: number, opts: { maxTokens?: number; json?: boolean }): Promise<string> {
+    let last: any;
+    for (const model of await geminiModelCandidates('text')) {
+      if (coolingFor(`llm:gemini:${model}`)) continue;
+      try {
+        console.log(`🤖 Querying LLM via Gemini model: ${model}...`);
+        const res = await axios.post(
+          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+          {
+            contents: [{ role: 'user', parts: [{ text: prompt }] }],
+            generationConfig: {
+              temperature,
+              // thinking models spend part of the limit on hidden reasoning: leave room so the answer is not cut off
+              maxOutputTokens: Math.min(60000, (opts.maxTokens ?? 4000) * 2 + 1500),
+              ...(opts.json ? { responseMimeType: 'application/json' } : {}),
+            },
+          },
+          { headers: { 'x-goog-api-key': config.geminiApiKey }, timeout: 240000 }
+        );
+        const parts: any[] = res.data?.candidates?.[0]?.content?.parts || [];
+        const text = parts.filter(p => !p.thought).map(p => p.text || '').join('').trim();
+        if (text) return text;
+        console.warn(`⚠️ Gemini ${model} returned no text (${res.data?.candidates?.[0]?.finishReason || res.data?.promptFeedback?.blockReason || 'unknown'}).`);
+      } catch (e: any) {
+        last = e;
+        const msg = describeError(e);
+        console.warn(`⚠️ Gemini ${model}: ${msg.slice(0, 200)}`);
+        if (e.response?.status === 404) { forgetGeminiModels(); continue; }
+        const c = classify(e, msg);
+        if (c.kind !== 'transient' && c.kind !== 'reject') cooldown(`llm:gemini:${model}`, c.ms, c.kind === 'quota' ? 'free quota reached' : 'unavailable');
+      }
+    }
+    throw new Error(`Gemini unavailable${last ? `: ${describeError(last).slice(0, 160)}` : ''}`);
+  }
+
+  private groqModels: { at: number; ids: string[] } | null = null;
+  /** Groq (free tier, OpenAI-compatible): GROQ_MODEL, else the best current general model from its live list. */
+  private async queryGroq(prompt: string, temperature: number, opts: { maxTokens?: number; json?: boolean }): Promise<string> {
+    const headers = { Authorization: `Bearer ${config.groqApiKey}`, 'Content-Type': 'application/json' };
+    if (!this.groqModels || Date.now() - this.groqModels.at > 3600_000) {
+      let ids: string[] = [];
+      try {
+        const r = await axios.get('https://api.groq.com/openai/v1/models', { headers, timeout: 15000 });
+        const all: string[] = (r.data?.data || []).map((m: any) => m.id).filter((id: string) => !/whisper|guard|tts|playai|distil|prompt/i.test(id));
+        const pref = [/llama-3\.3-70b/, /gpt-oss-120b/, /llama-4/, /qwen/, /gpt-oss/];
+        ids = pref.flatMap(re => all.filter(id => re.test(id))).filter((id, i, a) => a.indexOf(id) === i).slice(0, 3);
+      } catch { /* use the static fallback below */ }
+      this.groqModels = { at: Date.now(), ids: ids.length ? ids : ['llama-3.3-70b-versatile', 'openai/gpt-oss-120b'] };
+    }
+    const models = process.env.GROQ_MODEL ? [process.env.GROQ_MODEL] : this.groqModels.ids;
+    let last: any;
+    for (const model of models) {
+      if (coolingFor(`llm:groq:${model}`)) continue;
+      let json = !!opts.json;
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+          console.log(`🤖 Querying LLM via Groq model: ${model}...`);
+          const res = await axios.post(
+            'https://api.groq.com/openai/v1/chat/completions',
+            { model, messages: [{ role: 'user', content: prompt }], temperature, max_tokens: Math.min(32000, (opts.maxTokens ?? 4000) + 500), ...(json ? { response_format: { type: 'json_object' } } : {}) },
+            { headers, timeout: 240000 }
+          );
+          const text = res.data?.choices?.[0]?.message?.content;
+          if (text) return String(text).trim();
+          break;
+        } catch (e: any) {
+          last = e;
+          const msg = describeError(e);
+          if (json && e.response?.status === 400 && /response_format|json/i.test(msg)) { json = false; continue; }
+          console.warn(`⚠️ Groq ${model}: ${msg.slice(0, 200)}`);
+          const c = classify(e, msg);
+          if (c.kind !== 'transient' && c.kind !== 'reject') cooldown(`llm:groq:${model}`, c.ms, c.kind === 'quota' ? 'free quota reached' : 'unavailable');
+          break;
+        }
+      }
+    }
+    throw new Error(`Groq unavailable${last ? `: ${describeError(last).slice(0, 160)}` : ''}`);
   }
 
   /**
@@ -513,7 +629,7 @@ Respond ONLY with JSON: {"scenes": [{"voiceover": "...", "overlay": "..."${roman
 
     console.log(`📝 Generating LLM content package for ${saint.name} in ${langLabel}...`);
 
-    if (config.dryRun || !this.openrouterApiKey) {
+    if (config.dryRun || !this.llmAvailable()) {
       return this.getDryRunFallbackContent(saint, targetLang);
     }
 

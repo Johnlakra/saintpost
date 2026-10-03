@@ -5,14 +5,15 @@ import { config } from '../config/env.js';
  * Google retires Gemini model names often ("no longer available to new users"). Instead of hard-coding one,
  * ask the API which models this key can use and take the newest suitable one. Env overrides still win.
  */
-export type GeminiKind = 'vision' | 'image' | 'tts';
+export type GeminiKind = 'vision' | 'image' | 'tts' | 'text';
 
 const FALLBACK: Record<GeminiKind, string[]> = {
   vision: ['gemini-3.8-flash', 'gemini-2.5-flash'],
+  text: ['gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-2.5-flash'],
   image: ['gemini-2.5-flash-image'],
   tts: ['gemini-2.5-flash-preview-tts', 'gemini-2.5-flash-tts'],
 };
-const ENV: Record<GeminiKind, string> = { vision: 'GEMINI_VISION_MODEL', image: 'GEMINI_IMAGE_MODEL', tts: 'GEMINI_TTS_MODEL' };
+const ENV: Record<GeminiKind, string> = { text: 'GEMINI_TEXT_MODEL', vision: 'GEMINI_VISION_MODEL', image: 'GEMINI_IMAGE_MODEL', tts: 'GEMINI_TTS_MODEL' };
 
 let cache: { at: number; names: Array<{ name: string; methods: string[] }> } | null = null;
 
@@ -46,7 +47,16 @@ export async function geminiModelCandidates(kind: GeminiKind): Promise<string[]>
     let pool: string[];
     if (kind === 'image') pool = all.filter(n => ok(n) && /image/.test(n.name) && !/pro|preview-\d|exp/.test(n.name)).map(n => n.name);
     else if (kind === 'tts') pool = all.filter(n => ok(n) && /tts/.test(n.name)).map(n => n.name);
-    else pool = all.filter(n => ok(n) && /^gemini-[\d.]+-flash(-lite)?$/.test(n.name)).map(n => n.name); // stable text/vision flash models
+    else if (kind === 'text') {
+      // Best quality first (newest flash), then the newest lite, which has a much bigger free daily allowance.
+      const stable = all.filter(n => ok(n) && /^gemini-[\d.]+-flash(-lite)?$/.test(n.name)).map(n => n.name);
+      const flash = stable.filter(n => !/lite/.test(n)).sort((a, b) => version(b) - version(a));
+      const lite = stable.filter(n => /lite/.test(n)).sort((a, b) => version(b) - version(a));
+      const mixed: string[] = [];
+      for (let i = 0; i < 2; i++) { if (flash[i]) mixed.push(flash[i]); if (lite[i]) mixed.push(lite[i]); }
+      if (mixed.length) return mixed;
+      pool = [];
+    } else pool = all.filter(n => ok(n) && /^gemini-[\d.]+-flash(-lite)?$/.test(n.name)).map(n => n.name); // stable text/vision flash models
     // newest version first; for vision prefer the cheaper "-lite" of the same version
     pool.sort((a, b) => version(b) - version(a) || (kind === 'vision' ? Number(/lite/.test(b)) - Number(/lite/.test(a)) : 0));
     if (pool.length) return pool.slice(0, 3);
