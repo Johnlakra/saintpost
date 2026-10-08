@@ -11,6 +11,7 @@ import { fileURLToPath } from 'url';
 import { projectService, ProjectService, Manifest, ProjectAssets } from './projectService.js';
 import { probeDuration } from '../utils/media.js';
 import { SaintRecord } from '../data/sanctusFetcher.js';
+import type { ScriptChange } from '../bot/scriptFormat.js';
 
 /**
  * An editing session on a saved project. Edits only change the in-memory draft and mark what became stale;
@@ -56,15 +57,47 @@ export class EditService {
   }
 
   async setNarration(d: Draft, i: number, text: string) {
+    await this.setNarrations(d, [{ idx: i, text }]);
+  }
+
+  /** Several narrations at once: one romanization call for all of them, and only these scenes are re-recorded. */
+  async setNarrations(d: Draft, items: Array<{ idx: number; text: string }>) {
+    if (!items.length) return;
+    const texts = items.map(it => it.text.trim());
+    const roman = d.manifest.romanSubs && d.manifest.lang !== 'en'
+      ? await this.llm.romanizeScenes(texts.map(voiceover => ({ voiceover }) as SceneScript), d.manifest.lang as 'hi' | 'pa')
+      : [];
+    items.forEach(({ idx }, k) => {
+      const sc = d.manifest.scenes[idx];
+      sc.voiceover = texts[k];
+      sc.subtitle = roman[k];
+      d.dirtyAud.add(idx);
+      d.summary.push(`Scene ${idx + 1}: new narration`);
+    });
+  }
+
+  /** The admin's own picture prompt, used as written: the scene is redrawn from it (the old fallback/checklist no longer match). */
+  setPicturePrompt(d: Draft, i: number, prompt: string) {
     const sc = d.manifest.scenes[i];
-    sc.voiceover = text.trim();
-    if (d.manifest.romanSubs && d.manifest.lang !== 'en') {
-      sc.subtitle = (await this.llm.romanizeScenes([{ voiceover: sc.voiceover } as SceneScript], d.manifest.lang as 'hi' | 'pa'))[0];
-    } else {
-      sc.subtitle = undefined;
+    sc.image_prompt = prompt.trim();
+    sc.safe_prompt = undefined;
+    sc.must_include = [];
+    d.dirtyImg.add(i);
+    d.instructions.delete(i);
+    d.editInPlace.delete(i);
+    d.summary.push(`Scene ${i + 1}: new picture prompt`);
+  }
+
+  /** Applies a batch of script edits (from the "edit many at once" text). Only the listed fields are touched. */
+  async applyScriptChanges(d: Draft, changes: ScriptChange[]) {
+    const narrations: Array<{ idx: number; text: string }> = [];
+    for (const c of changes) {
+      if (c.kind === 'caption') this.setCaption(d, c.value);
+      else if (c.field === 'title') this.setTitle(d, c.idx, c.value || '-');
+      else if (c.field === 'prompt') this.setPicturePrompt(d, c.idx, c.value);
+      else narrations.push({ idx: c.idx, text: c.value });
     }
-    d.dirtyAud.add(i);
-    d.summary.push(`Scene ${i + 1}: new narration`);
+    await this.setNarrations(d, narrations);
   }
 
   setTitle(d: Draft, i: number, text: string) {

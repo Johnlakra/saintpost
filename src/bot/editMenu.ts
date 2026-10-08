@@ -5,6 +5,8 @@ import { SaintRecord } from '../data/sanctusFetcher.js';
 import { Lang, LANG_LABEL, getPreview, sendPreview } from './present.js';
 import { setPending, clearPending, Pending } from './state.js';
 import { db } from '../db/index.js';
+import { chunkBlocks, picturePrompt } from './scriptFormat.js';
+import { sendFullScript, sendBulkTemplate, applyBulkText, applyBulkFile } from './editBulk.js';
 
 const uid = (ctx: Context) => String(ctx.from?.id ?? '');
 const drafts = new Map<string, Draft>();
@@ -18,18 +20,18 @@ async function romanPref(): Promise<boolean> {
   } catch { return true; }
 }
 
-const short = (t: string, n = 70) => (t.length > n ? t.slice(0, n - 1) + '…' : t);
+const TELEGRAM_TEXT_LIMIT = 4096;
 
+/** Scene list by title (full narration and prompts are in the 📜 full script, which is never shortened). */
 function panelText(d: Draft): string {
   const m = d.manifest;
-  const lines = m.scenes.map((s, i) => `${i + 1}. ${short(s.voiceover)}${d.dirtyImg.has(i) ? ' 🖼✎' : ''}${d.dirtyAud.has(i) ? ' 🎙✎' : ''}`);
-  return (
-    `✏️ Editing: ${m.saint.name} [${m.lang.toUpperCase()}] · version ${m.version}\n\n` +
-    lines.join('\n') +
-    `\n\n📝 Caption: ${short(m.caption, 120)}\n\n` +
+  const lines = m.scenes.map((s, i) => `${i + 1}. ${s.overlay || '(no title)'}${d.dirtyImg.has(i) ? ' 🖼✎' : ''}${d.dirtyAud.has(i) ? ' 🎙✎' : ''}`);
+  const head = `✏️ Editing: ${m.saint.name} [${m.lang.toUpperCase()}] · version ${m.version} · ${m.scenes.length} scenes\n\n` + lines.join('\n');
+  const tail =
     (d.summary.length ? `Pending changes:\n• ${d.summary.join('\n• ')}\n\n` : 'No changes yet. ') +
-    'Tap a scene number to change its picture, narration or title. Only what you change is redone; everything else is reused, so no image credits or AI tokens are spent on the rest.'
-  );
+    'Tap a scene number to see its full narration and picture prompt and change it, or 📋 to edit many scenes at once. Only what you change is redone; everything else is reused, so no image credits or AI tokens are spent on the rest.';
+  const withCaption = `${head}\n\n📝 Caption:\n${m.caption}\n\n${tail}`;
+  return withCaption.length <= TELEGRAM_TEXT_LIMIT ? withCaption : `${head}\n\n📝 Caption: see 📜 Full script.\n\n${tail}`;
 }
 
 function panelKeyboard(d: Draft) {
@@ -38,6 +40,7 @@ function panelKeyboard(d: Draft) {
   const rows: any[] = [];
   for (let i = 0; i < nums.length; i += 5) rows.push(nums.slice(i, i + 5));
   const others = (['hi', 'pa', 'en'] as Lang[]).filter(l => l !== d.manifest.lang);
+  rows.push([Markup.button.callback('📜 Full script', 'ed:full'), Markup.button.callback('📋 Edit many at once', 'ed:bulk')]);
   rows.push([Markup.button.callback('📝 Edit caption', 'ed:cap'), ...others.map(l => Markup.button.callback(`🌐 ${LANG_LABEL[l]}`, `ed:tr2:${l}`))]);
   const pending = d.dirtyImg.size + d.dirtyAud.size > 0 || d.needsRender;
   rows.push([Markup.button.callback(pending ? '✅ Apply changes' : '🎬 Re-render (new watermark/settings)', 'ed:apply'), Markup.button.callback('❌ Close', 'ed:cancel')]);
@@ -54,16 +57,20 @@ async function showPanel(ctx: Context, d: Draft, edit = true) {
 
 async function showScene(ctx: Context, d: Draft, n: number) {
   const s = d.manifest.scenes[n - 1];
-  await ctx.editMessageText(
-    `Scene ${n}/${d.manifest.scenes.length}\n\n🎙 ${s.voiceover}\n\n🔤 Title: ${s.overlay || '(none)'}\n\n🖼 Picture idea: ${short(s.visual, 200)}`,
-    Markup.inlineKeyboard([
-      [Markup.button.callback('✏️ Change this picture (keeps the rest)', `ed:imgi:${n}`)],
-      [Markup.button.callback('🖼 Redraw from scratch', `ed:img:${n}`)],
-      [Markup.button.callback('🎙 Edit narration', `ed:nar:${n}`), Markup.button.callback('🔤 Edit title', `ed:tit:${n}`)],
-      [Markup.button.callback('🗑 Delete scene', `ed:del:${n}`)],
-      [Markup.button.callback('⬅️ Back to scenes', 'ed:back')],
-    ])
-  ).catch(() => {});
+  const text = `Scene ${n}/${d.manifest.scenes.length}\n\n🔤 Title: ${s.overlay || '(none)'}\n\n🎙 Narration:\n${s.voiceover}\n\n🖼 Picture prompt:\n${picturePrompt(s)}`;
+  const kb = Markup.inlineKeyboard([
+    [Markup.button.callback('✏️ Change this picture (keeps the rest)', `ed:imgi:${n}`)],
+    [Markup.button.callback('🖼 Redraw from scratch', `ed:img:${n}`), Markup.button.callback('📝 Edit picture prompt', `ed:prm:${n}`)],
+    [Markup.button.callback('🎙 Edit narration', `ed:nar:${n}`), Markup.button.callback('🔤 Edit title', `ed:tit:${n}`)],
+    [Markup.button.callback('🗑 Delete scene', `ed:del:${n}`)],
+    [Markup.button.callback('⬅️ Back to scenes', 'ed:back')],
+  ]);
+  if (text.length <= TELEGRAM_TEXT_LIMIT) {
+    try { await ctx.editMessageText(text, kb); return; } catch { /* unchanged / old message: send it fresh */ }
+  }
+  // too long for one message: send it whole in parts, the buttons go with the last part
+  const parts = chunkBlocks([text]);
+  for (const [k, part] of parts.entries()) await ctx.reply(part, k === parts.length - 1 ? kb : {});
 }
 
 async function applyAndPresent(ctx: Context, d: Draft) {
@@ -120,7 +127,16 @@ export function registerEditMenu(bot: Telegraf<Context>, auth: (ctx: Context, ne
     const d = await editService.open(+ctx.match[1]);
     if (!d) { await ctx.reply('That project is no longer stored (only the newest ones are kept). Make the video again.'); return; }
     drafts.set(uid(ctx), d);
+    await sendFullScript(ctx, d);
     await showPanel(ctx, d, false);
+  });
+
+  bot.action('ed:full', auth, async ctx => { const d = await need(ctx); if (!d) return; await ctx.answerCbQuery(); await sendFullScript(ctx, d); await showPanel(ctx, d, false); });
+  bot.action('ed:bulk', auth, async ctx => {
+    const d = await need(ctx); if (!d) return;
+    await ctx.answerCbQuery();
+    setPending(uid(ctx), { kind: 'ed_bulk' });
+    await sendBulkTemplate(ctx, d);
   });
 
   // another language, pictures reused: translate + rebuild in one tap
@@ -143,7 +159,7 @@ export function registerEditMenu(bot: Telegraf<Context>, auth: (ctx: Context, ne
 
   bot.action('ed:back', auth, async ctx => { const d = await need(ctx); if (!d) return; await ctx.answerCbQuery(); clearPending(uid(ctx)); await showPanel(ctx, d); });
   bot.action('ed:cancel', auth, async ctx => { await ctx.answerCbQuery('Closed'); drafts.delete(uid(ctx)); clearPending(uid(ctx)); await ctx.editMessageText('✏️ Editor closed.', Markup.inlineKeyboard([back])).catch(() => {}); });
-  bot.action('ed:apply', auth, async ctx => { const d = await need(ctx); if (!d) return; await ctx.answerCbQuery(); await applyAndPresent(ctx, d); });
+  bot.action('ed:apply', auth, async ctx => { const d = await need(ctx); if (!d) return; await ctx.answerCbQuery(); clearPending(uid(ctx)); await applyAndPresent(ctx, d); });
 
   bot.action(/^ed:sc:(\d+)$/, auth, async ctx => { const d = await need(ctx); if (!d) return; await ctx.answerCbQuery(); await showScene(ctx, d, +ctx.match[1]); });
   bot.action(/^ed:img:(\d+)$/, auth, async ctx => { const d = await need(ctx); if (!d) return; editService.redrawScene(d, +ctx.match[1] - 1); await ctx.answerCbQuery('Picture queued'); await showPanel(ctx, d); });
@@ -153,8 +169,8 @@ export function registerEditMenu(bot: Telegraf<Context>, auth: (ctx: Context, ne
     await showPanel(ctx, d);
   });
 
-  const ask = (field: 'narration' | 'title' | 'instruction', prompt: string) =>
-    bot.action(new RegExp(`^ed:${{ narration: 'nar', title: 'tit', instruction: 'imgi' }[field]}:(\\d+)$`), auth, async ctx => {
+  const ask = (field: 'narration' | 'title' | 'instruction' | 'prompt', prompt: string) =>
+    bot.action(new RegExp(`^ed:${{ narration: 'nar', title: 'tit', instruction: 'imgi', prompt: 'prm' }[field]}:(\\d+)$`), auth, async ctx => {
       const d = await need(ctx); if (!d) return;
       await ctx.answerCbQuery();
       setPending(uid(ctx), { kind: 'ed_text', field, idx: +ctx.match[1] - 1 });
@@ -162,6 +178,7 @@ export function registerEditMenu(bot: Telegraf<Context>, auth: (ctx: Context, ne
     });
   ask('narration', `🎙 Send the new narration for this scene (in the video's language). Keep it about the same length so it still fits the picture.`);
   ask('title', '🔤 Send the new on-screen title (max 6 words), or "-" to remove it.');
+  ask('prompt', '📝 Send the full new picture prompt for this scene. It is used exactly as written and only this picture is redrawn. Tip: copy the current prompt from the scene message above and change what you need.');
   ask('instruction', '✏️ What should change in this picture? Only that is changed; the composition, background and faces stay. For example: "make the angel look younger", "remove the people in the background", "make it evening".');
   bot.action('ed:cap', auth, async ctx => {
     const d = await need(ctx); if (!d) return;
@@ -171,20 +188,36 @@ export function registerEditMenu(bot: Telegraf<Context>, auth: (ctx: Context, ne
   });
 }
 
+const editorClosed = async (ctx: Context) => {
+  clearPending(uid(ctx));
+  await ctx.reply('The editor was closed. Open it again from the video.');
+};
+
 /** Free-text answers for the editor. Returns true when handled. */
 export async function handleEditText(ctx: Context, st: Pending, text: string): Promise<boolean> {
-  if (st.kind !== 'ed_text') return false;
+  if (st.kind !== 'ed_text' && st.kind !== 'ed_bulk') return false;
   const d = drafts.get(uid(ctx));
-  if (!d) { clearPending(uid(ctx)); await ctx.reply('The editor was closed. Open it again from the video.'); return true; }
+  if (!d) { await editorClosed(ctx); return true; }
+  if (st.kind === 'ed_bulk') { await applyBulkText(ctx, d, text); return true; } // stays in bulk mode for more parts
   clearPending(uid(ctx));
   try {
     if (st.field === 'narration') await editService.setNarration(d, st.idx, text);
     else if (st.field === 'title') editService.setTitle(d, st.idx, text);
     else if (st.field === 'instruction') editService.redrawScene(d, st.idx, text, true);
+    else if (st.field === 'prompt') editService.setPicturePrompt(d, st.idx, text);
     else editService.setCaption(d, text);
   } catch (e: any) {
     await ctx.reply(`❌ ${e.message}`);
   }
   await showPanel(ctx, d, false);
+  return true;
+}
+
+/** An edited script sent back as a .txt file while bulk editing. Returns true when handled. */
+export async function handleEditDocument(ctx: Context, st: Pending | undefined, doc: Parameters<typeof applyBulkFile>[2]): Promise<boolean> {
+  if (st?.kind !== 'ed_bulk') return false;
+  const d = drafts.get(uid(ctx));
+  if (!d) { await editorClosed(ctx); return true; }
+  await applyBulkFile(ctx, d, doc);
   return true;
 }

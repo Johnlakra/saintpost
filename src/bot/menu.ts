@@ -11,7 +11,7 @@ import { registerWatermarkMenu, handleLogoUpload, handleWatermarkText } from './
 
 import { LLMService } from '../services/llmService.js';
 import { Lang, LANG_LABEL, getPreview, sendPreview } from './present.js';
-import { registerEditMenu, handleEditText } from './editMenu.js';
+import { registerEditMenu, handleEditText, handleEditDocument } from './editMenu.js';
 
 const pipeline = new SaintPostPipeline();
 const fetcher = new SaintFetcherService();
@@ -341,9 +341,10 @@ export function registerMenu(bot: Telegraf<Context>, auth: (ctx: Context, next: 
     }
   });
 
-  // Logo sent as a file keeps PNG transparency
+  // Logo sent as a file keeps PNG transparency; an edited script comes back as a .txt file
   bot.on('document', auth, async (ctx, next) => {
     const st = pending.get(uid(ctx));
+    if (await handleEditDocument(ctx, st, ctx.message.document)) return;
     if (st?.kind !== 'wm_logo') return next();
     await handleLogoUpload(ctx, ctx.message.document.file_id, ctx.message.document.mime_type || '');
   });
