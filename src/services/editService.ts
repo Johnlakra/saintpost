@@ -29,6 +29,8 @@ export interface Draft {
   instructions: Map<number, string>;
   /** scenes whose picture is EDITED in place (keeps composition) rather than redrawn from scratch */
   editInPlace: Set<number>;
+  /** scenes with a new picture prompt: always drawn fresh from it, never by editing the old picture */
+  freshPrompt: Set<number>;
   /** a translation or caption/title edit changed what is on screen: a re-render is needed */
   needsRender: boolean;
   summary: string[];
@@ -44,16 +46,20 @@ export class EditService {
   async open(projectId: number): Promise<Draft | null> {
     const p = await projectService.load(projectId);
     if (!p) return null;
-    return { projectId, manifest: p.manifest, assets: p.assets, videoUrl: p.videoUrl, coverUrl: p.coverUrl, dirtyImg: new Set(), dirtyAud: new Set(), instructions: new Map(), editInPlace: new Set(), needsRender: false, summary: [] };
+    return { projectId, manifest: p.manifest, assets: p.assets, videoUrl: p.videoUrl, coverUrl: p.coverUrl, dirtyImg: new Set(), dirtyAud: new Set(), instructions: new Map(), editInPlace: new Set(), freshPrompt: new Set(), needsRender: false, summary: [] };
   }
 
   // ---- edits (cheap: they only mark what must be redone) ----
-  /** instruction + inPlace = edit the existing picture (keeps the rest); otherwise redraw from scratch. */
+  /**
+   * instruction + inPlace = edit the existing picture (keeps the rest); otherwise redraw from scratch.
+   * A scene with a new picture prompt has no valid old picture to edit, so it is always redrawn fresh.
+   */
   redrawScene(d: Draft, i: number, instruction?: string, inPlace = false) {
+    const editOld = !!instruction && inPlace && !d.freshPrompt.has(i);
     d.dirtyImg.add(i);
     if (instruction) d.instructions.set(i, instruction);
-    if (instruction && inPlace) d.editInPlace.add(i); else d.editInPlace.delete(i);
-    d.summary.push(`Scene ${i + 1}: ${instruction && inPlace ? 'edit picture' : 'new picture'}${instruction ? ` ("${instruction.slice(0, 40)}")` : ''}`);
+    if (editOld) d.editInPlace.add(i); else d.editInPlace.delete(i);
+    d.summary.push(`Scene ${i + 1}: ${editOld ? 'edit picture' : 'new picture'}${instruction ? ` ("${instruction.slice(0, 40)}")` : ''}`);
   }
 
   async setNarration(d: Draft, i: number, text: string) {
@@ -83,9 +89,10 @@ export class EditService {
     sc.safe_prompt = undefined;
     sc.must_include = [];
     d.dirtyImg.add(i);
+    d.freshPrompt.add(i);
     d.instructions.delete(i);
     d.editInPlace.delete(i);
-    d.summary.push(`Scene ${i + 1}: new picture prompt`);
+    d.summary.push(`Scene ${i + 1}: new picture prompt (drawn fresh)`);
   }
 
   /** Applies a batch of script edits (from the "edit many at once" text). Only the listed fields are touched. */
@@ -121,6 +128,7 @@ export class EditService {
     d.dirtyImg = shift(d.dirtyImg);
     d.dirtyAud = shift(d.dirtyAud);
     d.editInPlace = shift(d.editInPlace);
+    d.freshPrompt = shift(d.freshPrompt);
     const ins = new Map<number, string>();
     d.instructions.forEach((v, k) => { if (k !== i) ins.set(k > i ? k - 1 : k, v); });
     d.instructions = ins;
@@ -229,7 +237,7 @@ export class EditService {
       await projectService.save(d.projectId, m, d.assets, videoUrl);
       d.videoUrl = videoUrl;
       const reRecorded = aud.length;
-      d.dirtyImg.clear(); d.dirtyAud.clear(); d.instructions.clear(); d.editInPlace.clear(); d.needsRender = false; d.summary = [];
+      d.dirtyImg.clear(); d.dirtyAud.clear(); d.instructions.clear(); d.editInPlace.clear(); d.freshPrompt.clear(); d.needsRender = false; d.summary = [];
       // the cover must be reachable at a public URL for publishing (old files may be gone after a redeploy)
       let coverUrl: string | undefined;
       if (d.assets.cover) {
