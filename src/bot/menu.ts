@@ -10,8 +10,9 @@ import { getPending, setPending, clearPending } from './state.js';
 import { registerWatermarkMenu, handleLogoUpload, handleWatermarkText } from './watermarkMenu.js';
 
 import { LLMService } from '../services/llmService.js';
-import { Lang, LANG_LABEL, getPreview, sendPreview } from './present.js';
+import { Lang, LANG_LABEL, getPreview, presentResult } from './present.js';
 import { registerEditMenu, handleEditText, handleEditDocument } from './editMenu.js';
+import { registerReviewMenu, startReviewFlow, handleReviewText, handleReviewDocument } from './reviewMenu.js';
 
 const pipeline = new SaintPostPipeline();
 const fetcher = new SaintFetcherService();
@@ -45,6 +46,20 @@ async function setLength(userId: string, l: LengthId) {
   ).catch(() => {});
 }
 
+/** "Check first": approve the script and the pictures before the video is built (on unless switched off). */
+export async function getReviewFirst(userId: string): Promise<boolean> {
+  try {
+    const r = await db.query(`SELECT value FROM settings WHERE key = $1`, [`review:${userId}`]);
+    return r.rows[0]?.value !== 'off';
+  } catch { return true; }
+}
+async function setReviewFirst(userId: string, on: boolean) {
+  await db.query(
+    `INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = NOW()`,
+    [`review:${userId}`, on ? 'on' : 'off']
+  ).catch(() => {});
+}
+
 async function setLang(userId: string, lang: Lang) {
   await db.query(
     `INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = NOW()`,
@@ -73,13 +88,14 @@ export async function saveReferenceUrl(name: string, url: string): Promise<strin
 async function mainKeyboard(userId: string) {
   const lang = await getLang(userId);
   const length = await getLength(userId);
+  const reviewFirst = await getReviewFirst(userId);
   return Markup.inlineKeyboard([
     [Markup.button.callback("✝️ Today's Feast", 'm:today'), Markup.button.callback('🔎 Pick a Saint', 'm:pick')],
     [Markup.button.callback('📅 Feast by Date', 'm:date'), Markup.button.callback('🖼 Face Photo', 'm:ref')],
     [Markup.button.callback(`🌐 Language: ${LANG_LABEL[lang]}`, 'm:lang'), Markup.button.callback('📱 Accounts', 'm:acc')],
     [Markup.button.callback(`🎞 Length: ${LENGTHS[length].label} (${LENGTHS[length].approx})`, 'm:len'), Markup.button.callback('💧 Watermark', 'm:wm')],
     [Markup.button.callback('📂 My videos (edit)', 'm:vids'), Markup.button.callback('📊 Status', 'm:status')],
-    [Markup.button.callback('❓ Help', 'm:help')],
+    [Markup.button.callback(`🔍 Check first: ${reviewFirst ? 'ON' : 'OFF'}`, 'm:review'), Markup.button.callback('❓ Help', 'm:help')],
   ]);
 }
 const backRow = [Markup.button.callback('⬅️ Menu', 'm:main')];
@@ -92,6 +108,7 @@ const MENU_TEXT =
   '🖼 *Face Photo* — set a documented photo so the face is accurate\n' +
   '💧 *Watermark* — your logo/text on every video, movable any time\n' +
   '📂 *My videos* — edit a finished video: only what you change is redone\n' +
+  '🔍 *Check first* — approve the script and every picture before the video is built\n' +
   'Videos are *previews first*; you publish with one tap.';
 
 export async function showMainMenu(ctx: Context, edit = false) {
@@ -107,6 +124,10 @@ export async function showMainMenu(ctx: Context, edit = false) {
 
 // ---------- generation + presentation ----------
 export async function runAndPresent(ctx: Context, saintInput: SaintRecord | string, lang: Lang, dateMode = false) {
+  if (await getReviewFirst(uid(ctx))) {
+    await startReviewFlow(ctx, saintInput, lang, await getLength(uid(ctx)), dateMode);
+    return;
+  }
   const status = await ctx.reply(`🚀 Starting (${LANG_LABEL[lang]})... this takes several minutes. I'll update this message.`);
   let last = '';
   const update = async (text: string) => {
@@ -119,17 +140,7 @@ export async function runAndPresent(ctx: Context, saintInput: SaintRecord | stri
     const length = await getLength(uid(ctx));
     const result: PipelineResult = await pipeline.runPipelineForSaint(saintInput, lang, { publish: false, onProgress: update, length });
     await update(`✅ Done: ${result.saint.name}`);
-
-    const caption =
-      `🎬 ${result.saint.name} [${lang.toUpperCase()}]\n\n${result.content.caption}\n\n${result.content.hashtags}`.slice(0, 1000);
-    await sendPreview(ctx, { saint: result.saint, lang, payload: result.payload, dateMode, projectId: result.projectId }, result.finalVideoUrl, caption);
-    await ctx.reply(
-      `🖼 Cover: ${result.coverImageUrl}\n` +
-      `🧑 Face reference: ${result.referenceImageUrl || 'none (tap 🖼 Face Photo in the menu to add one)'}\n` +
-      `🎞 ${result.sceneCount} scenes${result.animatedScenes ? `, ${result.animatedScenes} with real motion` : ''}\n` +
-      `🔎 Image check: ${result.qa.checked ? `${result.qa.checked} inspected, ${result.qa.retried} redrawn to fix flaws` : 'not available this run (images accepted unchecked)'}` +
-      (result.notes.length ? `\n\n⚠️ Quality notes:\n• ${result.notes.join('\n• ')}\nConsider regenerating before you publish.` : '')
-    );
+    await presentResult(ctx, result, lang, dateMode);
   } catch (err: any) {
     await update(`❌ ${err.message}`);
     await ctx.reply('Something went wrong. Back to the menu?', Markup.inlineKeyboard([backRow]));
@@ -149,8 +160,16 @@ export function registerMenu(bot: Telegraf<Context>, auth: (ctx: Context, next: 
   bot.command('menu', auth, ctx => showMainMenu(ctx));
   registerWatermarkMenu(bot, auth);
   registerEditMenu(bot, auth);
+  registerReviewMenu(bot, auth);
 
   bot.action('m:main', auth, async ctx => { await ctx.answerCbQuery(); pending.delete(uid(ctx)); await showMainMenu(ctx, true); });
+
+  bot.action('m:review', auth, async ctx => {
+    const on = !(await getReviewFirst(uid(ctx)));
+    await setReviewFirst(uid(ctx), on);
+    await ctx.answerCbQuery(on ? 'Check first ON: you approve the script and pictures before the video is built' : 'Check first OFF: videos are built in one go', { show_alert: true });
+    await showMainMenu(ctx, true);
+  });
 
   bot.action('m:today', auth, async ctx => {
     await ctx.answerCbQuery('Starting…');
@@ -345,6 +364,7 @@ export function registerMenu(bot: Telegraf<Context>, auth: (ctx: Context, next: 
   bot.on('document', auth, async (ctx, next) => {
     const st = pending.get(uid(ctx));
     if (await handleEditDocument(ctx, st, ctx.message.document)) return;
+    if (await handleReviewDocument(ctx, st, ctx.message.document)) return;
     if (st?.kind !== 'wm_logo') return next();
     await handleLogoUpload(ctx, ctx.message.document.file_id, ctx.message.document.mime_type || '');
   });
@@ -357,6 +377,7 @@ export function registerMenu(bot: Telegraf<Context>, auth: (ctx: Context, next: 
     if (!st) return next();
     if (await handleWatermarkText(ctx, st, text)) return;
     if (await handleEditText(ctx, st, text)) return;
+    if (await handleReviewText(ctx, st, text)) return;
 
     if (st.kind === 'saint') {
       pending.delete(uid(ctx));

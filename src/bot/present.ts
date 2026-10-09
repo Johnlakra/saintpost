@@ -1,5 +1,5 @@
 import { Context, Markup } from 'telegraf';
-import type { PostPayloadData } from '../engine/pipeline.js';
+import type { PostPayloadData, PipelineResult } from '../engine/pipeline.js';
 import type { SaintRecord } from '../data/sanctusFetcher.js';
 
 export type Lang = 'hi' | 'pa' | 'en';
@@ -38,4 +38,18 @@ export async function sendPreview(ctx: Context, p: Preview, videoUrl: string, ca
     await ctx.reply(`${text}\n\n▶️ ${videoUrl}`, kb);
   }
   return id;
+}
+
+/** A freshly built video: the preview with its buttons, then the build report. */
+export async function presentResult(ctx: Context, result: PipelineResult, lang: Lang, dateMode: boolean) {
+  const caption =
+    `🎬 ${result.saint.name} [${lang.toUpperCase()}]\n\n${result.content.caption}\n\n${result.content.hashtags}`.slice(0, 1000);
+  await sendPreview(ctx, { saint: result.saint, lang, payload: result.payload, dateMode, projectId: result.projectId }, result.finalVideoUrl, caption);
+  await ctx.reply(
+    `🖼 Cover: ${result.coverImageUrl}\n` +
+    `🧑 Face reference: ${result.referenceImageUrl || 'none (tap 🖼 Face Photo in the menu to add one)'}\n` +
+    `🎞 ${result.sceneCount} scenes${result.animatedScenes ? `, ${result.animatedScenes} with real motion` : ''}\n` +
+    `🔎 Image check: ${result.qa.checked ? `${result.qa.checked} inspected, ${result.qa.retried} redrawn to fix flaws` : 'not available this run (images accepted unchecked)'}` +
+    (result.notes.length ? `\n\n⚠️ Quality notes:\n• ${result.notes.join('\n• ')}\nConsider regenerating before you publish.` : '')
+  );
 }

@@ -3,7 +3,7 @@ import os from 'os';
 import path from 'path';
 import { config } from '../config/env.js';
 import { LLMService, SceneScript } from './llmService.js';
-import { VisualAssetService } from './visualAssetService.js';
+import { VisualAssetService, ImageAssetResult } from './visualAssetService.js';
 import { VideoService } from './videoService.js';
 import { TTSService } from './ttsService.js';
 import { VideoAssemblyService, AssemblyScene } from './videoAssemblyService.js';
@@ -157,6 +157,47 @@ export class EditService {
     d.summary.push(`Translated to ${to.toUpperCase()} (pictures reused)`);
   }
 
+  /**
+   * Redraws ONLY the pictures marked dirty (the only step that spends image credits): an in-place edit when asked
+   * for and possible, otherwise a fresh drawing from the (possibly rewritten) prompt. Returns the new images by scene.
+   */
+  async redrawPictures(d: Draft, saint: SaintRecord, work: string, coverFile: string | undefined, onProgress: (m: string) => void = () => {}): Promise<Map<number, ImageAssetResult>> {
+    const m = d.manifest;
+    const done = new Map<number, ImageAssetResult>();
+    for (const i of [...d.dirtyImg].sort((a, b) => a - b)) {
+      onProgress(`🖼 Redrawing scene ${i + 1}…`);
+      const sc = m.scenes[i];
+      const instr = d.instructions.get(i);
+      let img: ImageAssetResult | null = null;
+      if (instr && d.editInPlace.has(i) && d.assets.scenes[i]) {
+        // best way: edit the existing picture (no prompt rewrite, composition and faces stay)
+        try {
+          const cur = path.join(work, `cur${i}.jpg`);
+          fs.writeFileSync(cur, d.assets.scenes[i]!);
+          img = await this.visual.editScene(saint, cur, instr, i, sc.must_include || []);
+          sc.image_prompt = `${sc.image_prompt || sc.visual} Also: ${instr}.`; // keep later full redraws consistent with the change
+        } catch (e: any) {
+          console.warn(`   ⚠️ In-place edit of scene ${i + 1} failed (${String(e.message).slice(0, 120)}); redrawing from the updated prompt instead.`);
+        }
+      }
+      if (!img) {
+        if (instr) {
+          const r = await this.llm.rewriteImagePrompt(sc.image_prompt || sc.visual, instr, sc.voiceover, { appearance: m.saint.appearance, mustInclude: sc.must_include });
+          sc.image_prompt = r.prompt;
+          sc.safe_prompt = r.safe || sc.safe_prompt;
+          sc.must_include = r.mustInclude;
+        }
+        const scene: SceneScript = { scene_number: i + 1, duration: 0, visual: sc.visual, voiceover: sc.voiceover, text_overlay: sc.overlay, image_prompt: sc.image_prompt, safe_prompt: sc.safe_prompt, must_include: sc.must_include, risk: sc.risk, uses_main: sc.uses_main };
+        img = await this.visual.regenerateScene(saint, scene, i, coverFile, 1 + Math.floor(Math.random() * 50));
+      }
+      d.assets.scenes[i] = await ProjectService.toJpeg(img.localPath);
+      d.assets.aiClips && delete d.assets.aiClips[i]; // the old motion clip no longer matches the new picture
+      done.set(i, img);
+    }
+
+    return done;
+  }
+
   // ---- apply ----
   async apply(d: Draft, onProgress: (m: string) => void = () => {}): Promise<{ videoUrl: string; coverUrl?: string; redrawn: number; reRecorded: number }> {
     const m = d.manifest;
@@ -169,37 +210,7 @@ export class EditService {
       // 1. redraw only the scenes that changed (the only step that spends image credits)
       const coverFile = path.join(work, 'cover.jpg');
       if (d.assets.cover) fs.writeFileSync(coverFile, d.assets.cover);
-      let redrawn = 0;
-      for (const i of [...d.dirtyImg].sort((a, b) => a - b)) {
-        onProgress(`🖼 Redrawing scene ${i + 1}…`);
-        const sc = m.scenes[i];
-        const instr = d.instructions.get(i);
-        let img: { localPath: string } | null = null;
-        if (instr && d.editInPlace.has(i) && d.assets.scenes[i]) {
-          // best way: edit the existing picture (no prompt rewrite, composition and faces stay)
-          try {
-            const cur = path.join(work, `cur${i}.jpg`);
-            fs.writeFileSync(cur, d.assets.scenes[i]!);
-            img = await this.visual.editScene(saint, cur, instr, i, sc.must_include || []);
-            sc.image_prompt = `${sc.image_prompt || sc.visual} Also: ${instr}.`; // keep later full redraws consistent with the change
-          } catch (e: any) {
-            console.warn(`   ⚠️ In-place edit of scene ${i + 1} failed (${String(e.message).slice(0, 120)}); redrawing from the updated prompt instead.`);
-          }
-        }
-        if (!img) {
-          if (instr) {
-            const r = await this.llm.rewriteImagePrompt(sc.image_prompt || sc.visual, instr, sc.voiceover, { appearance: m.saint.appearance, mustInclude: sc.must_include });
-            sc.image_prompt = r.prompt;
-            sc.safe_prompt = r.safe || sc.safe_prompt;
-            sc.must_include = r.mustInclude;
-          }
-          const scene: SceneScript = { scene_number: i + 1, duration: 0, visual: sc.visual, voiceover: sc.voiceover, text_overlay: sc.overlay, image_prompt: sc.image_prompt, safe_prompt: sc.safe_prompt, must_include: sc.must_include, risk: sc.risk, uses_main: sc.uses_main };
-          img = await this.visual.regenerateScene(saint, scene, i, d.assets.cover ? coverFile : undefined, 1 + Math.floor(Math.random() * 50));
-        }
-        d.assets.scenes[i] = await ProjectService.toJpeg(img.localPath);
-        d.assets.aiClips && delete d.assets.aiClips[i]; // the old motion clip no longer matches the new picture
-        redrawn++;
-      }
+      const redrawn = (await this.redrawPictures(d, saint, work, d.assets.cover ? coverFile : undefined, onProgress)).size;
 
       // 2. re-record only the scenes whose narration changed (free engines first, as in the original run)
       const aud = [...d.dirtyAud].sort((a, b) => a - b);

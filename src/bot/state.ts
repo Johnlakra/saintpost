@@ -8,7 +8,9 @@ export type Pending =
   | { kind: 'wm_text' }
   | { kind: 'wm_custom'; el: 'logo' | 'text' }
   | { kind: 'ed_text'; field: 'narration' | 'title' | 'instruction' | 'prompt' | 'caption'; idx: number }
-  | { kind: 'ed_bulk' };
+  | { kind: 'ed_bulk' }
+  | { kind: 'rv_bulk' }
+  | { kind: 'rv_text'; field: 'instruction' | 'prompt'; idx: number };
 
 const pending = new Map<string, Pending>();
 export const getPending = (uid: string) => pending.get(uid);

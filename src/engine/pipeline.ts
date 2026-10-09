@@ -1,11 +1,11 @@
 import fs from 'fs';
 import { SaintFetcherService, SaintRecord } from '../data/sanctusFetcher.js';
-import { LLMService, GeneratedContent } from '../services/llmService.js';
-import { VisualAssetService } from '../services/visualAssetService.js';
+import { LLMService, GeneratedContent, VisualBrief } from '../services/llmService.js';
+import { VisualAssetService, ImageAssetResult, VisualReport } from '../services/visualAssetService.js';
 import { VideoService } from '../services/videoService.js';
 import { projectService, ProjectService, Manifest } from '../services/projectService.js';
 import { aiVideoAvailable } from '../providers/video/index.js';
-import { LENGTHS, LengthId, DEFAULT_LENGTH } from '../config/lengths.js';
+import { LENGTHS, LengthId, LengthPreset, DEFAULT_LENGTH } from '../config/lengths.js';
 import { TTSService } from '../services/ttsService.js';
 import { VideoAssemblyService, AssemblyScene } from '../services/videoAssemblyService.js';
 import { FactService } from '../services/factService.js';
@@ -48,6 +48,26 @@ export interface PipelineResult {
   qa: { checked: number; retried: number; flagged: string[] };
   /** saved copy of the script + pictures + narration, so the video can be edited without regenerating everything */
   projectId?: number;
+}
+
+/** Everything decided before any picture is painted: facts, script and picture prompts. */
+export interface ScriptStage {
+  saintInput?: SaintRecord | string;
+  saint: SaintRecord;
+  lang: 'en' | 'hi' | 'pa';
+  preset: LengthPreset;
+  wantRoman: boolean;
+  dossier: Awaited<ReturnType<LLMService['getDossier']>>;
+  content: GeneratedContent;
+  brief: VisualBrief | null;
+}
+
+/** An approved script plus its painted pictures. */
+export interface PictureStage extends ScriptStage {
+  cover: ImageAssetResult;
+  scenes: ImageAssetResult[];
+  characterSheetUrl: string;
+  report: VisualReport;
 }
 
 let pipelineBusy = false;
@@ -112,14 +132,41 @@ export class SaintPostPipeline {
     targetLang: 'en' | 'hi' | 'pa' = config.defaultLanguage || 'hi',
     opts: PipelineOptions = {}
   ): Promise<PipelineResult> {
-    // One render at a time: parallel runs exhaust RAM on the free tier and trip image-API rate limits.
+    return this.exclusive(() => this.runPipeline(saintInput, targetLang, opts));
+  }
+
+  // ---- staged runs ("check first"): the admin verifies the script, then the pictures, before the video is built ----
+  /** Facts, script and picture prompts only; nothing is painted or recorded yet. */
+  async prepareScript(saintInput: SaintRecord | string | undefined, targetLang: 'en' | 'hi' | 'pa', opts: PipelineOptions = {}): Promise<ScriptStage> {
+    return this.exclusive(async () => {
+      const stage = await this.writeScript(saintInput, targetLang, opts);
+      return this.designPictures(stage);
+    });
+  }
+
+  /** Cover + scene pictures for an approved script. */
+  async paintPictures(stage: ScriptStage, opts: PipelineOptions = {}): Promise<PictureStage> {
+    return this.exclusive(() => this.paint(stage, opts));
+  }
+
+  /** Narration, clips, assembly and the saved project, from approved pictures. */
+  async buildVideo(stage: PictureStage, opts: PipelineOptions = {}): Promise<PipelineResult> {
+    return this.exclusive(() => this.assemble(stage, opts));
+  }
+
+  /** One render at a time: parallel runs exhaust RAM on the free tier and trip image-API rate limits. */
+  private async exclusive<T>(fn: () => Promise<T>): Promise<T> {
     if (pipelineBusy) throw new Error('Another video is still being generated. Please wait for it to finish.');
     pipelineBusy = true;
     try {
-      return await this.runPipeline(saintInput, targetLang, opts);
+      return await fn();
     } finally {
       pipelineBusy = false;
     }
+  }
+
+  private progressFn(opts: PipelineOptions) {
+    return (m: string) => { try { opts.onProgress?.(m); } catch { /* never break the pipeline on UI errors */ } };
   }
 
   private async runPipeline(
@@ -127,8 +174,17 @@ export class SaintPostPipeline {
     targetLang: 'en' | 'hi' | 'pa',
     opts: PipelineOptions
   ): Promise<PipelineResult> {
-    const progress = (m: string) => { try { opts.onProgress?.(m); } catch { /* never break the pipeline on UI errors */ } };
-    const shouldPublish = opts.publish !== false;
+    const written = await this.writeScript(saintInput, targetLang, opts);
+    // Narration can be recorded while the pictures are being painted (it only needs the script)
+    const audiosPromise = this.recordNarration(written);
+    const designed = await this.designPictures(written);
+    const painted = await this.paint(designed, opts);
+    return this.assemble(painted, opts, audiosPromise);
+  }
+
+  /** STEPS 1-2a: saint, documented facts, dossier, script (+ Hinglish/Pinglish subtitles). */
+  private async writeScript(saintInput: SaintRecord | string | undefined, targetLang: 'en' | 'hi' | 'pa', opts: PipelineOptions): Promise<ScriptStage> {
+    const progress = this.progressFn(opts);
     console.log(`\n======================================================`);
     console.log(`🚀 STARTING SAINTPOST AUTOMATION PIPELINE [LANG: ${targetLang.toUpperCase()}]`);
     console.log(`======================================================\n`);
@@ -177,12 +233,18 @@ export class SaintPostPipeline {
       }
       console.log(`✅ Step 2a: ${targetLang === 'hi' ? 'Hinglish' : 'Pinglish'} subtitles ready`);
     }
+    return { saintInput, saint, lang: targetLang, preset, wantRoman, dossier, content, brief: null };
+  }
 
-    // Narration can be recorded while the pictures are being painted (it only needs the script)
-    const audiosPromise = this.ttsService.generateSceneVoiceovers(content.video_script.map(sc => sc.voiceover), saint.name, targetLang);
-    audiosPromise.catch(() => undefined); // awaited later; avoid an unhandled rejection if images fail first
+  private recordNarration(stage: ScriptStage) {
+    const p = this.ttsService.generateSceneVoiceovers(stage.content.video_script.map(sc => sc.voiceover), stage.saint.name, stage.lang);
+    p.catch(() => undefined); // awaited later; avoid an unhandled rejection if images fail first
+    return p;
+  }
 
-    // STEP 2b: fact-grounded detailed image prompts (saint dossier + the day's feast)
+  /** STEP 2b: fact-grounded detailed image prompts (saint dossier + the day's feast). */
+  private async designPictures(stage: ScriptStage): Promise<ScriptStage> {
+    const { saint, content, dossier } = stage;
     const brief = await this.llmService.buildVisualBrief(saint, content.video_script, {
       dateLabel: `${saint.feast_month}/${saint.feast_day}`,
       rank: saint.rank,
@@ -200,37 +262,47 @@ export class SaintPostPipeline {
       });
     }
     console.log(`✅ Step 2b: Visual brief ${brief ? 'built for ' + brief.scenes.length + ' scenes' : 'skipped (using basic visuals)'}`);
+    return { ...stage, brief };
+  }
 
-    // STEP 3/4: cover first (it becomes the face anchor for every scene when no documented photo exists)
+  /** STEPS 3-4: cover first (it becomes the face anchor for every scene when no documented photo exists), then scenes. */
+  private async paint(stage: ScriptStage, opts: PipelineOptions): Promise<PictureStage> {
+    const progress = this.progressFn(opts);
+    const { saint, content, brief } = stage;
     progress('🎨 Painting cover and scene images (this is the slow part)...');
-    const coverResult = await this.visualService.generateCoverImage(saint, undefined, brief?.cover);
-    const coverImageUrl = coverResult.url;
+    const cover = await this.visualService.generateCoverImage(saint, undefined, brief?.cover);
     let characterSheetUrl = '';
     if (config.generateCharacterSheet) {
       characterSheetUrl = (await this.visualService.generateCharacterSheet(saint)).url;
     }
     console.log(`✅ Step 3: Cover generated${characterSheetUrl ? ' + character sheet' : ' (character sheet skipped to save image calls)'}`);
-    const sceneAssets = await this.visualService.generateSceneImages(
-      saint,
-      content.video_script,
-      characterSheetUrl
-    );
-    if (this.visualService.report.reused.length > Math.floor(sceneAssets.length * 0.4)) {
-      throw new Error(`Too many scenes (${this.visualService.report.reused.length}/${sceneAssets.length}) could not get a good image (image credits/quota used up). I stopped instead of making a poor video. Check the Providers screen in the menu.`);
+    const scenes = await this.visualService.generateSceneImages(saint, content.video_script, characterSheetUrl);
+    const report = this.visualService.report;
+    if (report.reused.length > Math.floor(scenes.length * 0.4)) {
+      throw new Error(`Too many scenes (${report.reused.length}/${scenes.length}) could not get a good image (image credits/quota used up). I stopped instead of making a poor video. Check the Providers screen in the menu.`);
     }
-    console.log(`✅ Step 4: Visual Images Generated (1 Cover + ${sceneAssets.length} Scenes)`);
+    console.log(`✅ Step 4: Visual Images Generated (1 Cover + ${scenes.length} Scenes)`);
+    return { ...stage, cover, scenes, characterSheetUrl, report: { ...report, reused: [...report.reused], qa: { ...report.qa, flagged: [...report.qa.flagged] } } };
+  }
+
+  /** STEPS 5-10: narration, clips, assembly, saved project, (publish), post record. */
+  private async assemble(stage: PictureStage, opts: PipelineOptions, audiosPromise?: ReturnType<SaintPostPipeline['recordNarration']>): Promise<PipelineResult> {
+    const progress = this.progressFn(opts);
+    const shouldPublish = opts.publish !== false;
+    const { saintInput, saint, lang: targetLang, preset, wantRoman, content, cover: coverResult, scenes: sceneAssets, characterSheetUrl, report } = stage;
+    const coverImageUrl = coverResult.url;
     progress('🎙️ Recording the narration...');
 
     // STEP 5: GENERATE PER-SCENE VOICEOVER (neural TTS). Video timing is driven by the audio.
     const scenes = content.video_script;
-    const audios = await audiosPromise;
+    const audios = await (audiosPromise ?? this.recordNarration(stage));
     console.log(`✅ Step 5: ${audios.length} scene voiceovers generated (${targetLang.toUpperCase()})`);
     progress('🎞️ Animating scenes...');
 
     // STEP 6: GENERATE VIDEO CLIPS, each exactly as long as its narration (+0.5s breathing room).
     // The first few scenes get real AI motion when a provider is available; the rest use the Ken Burns move.
     const notes: string[] = [];
-    const reusedScenes = this.visualService.report.reused;
+    const reusedScenes = report.reused;
     const maxAi = parseInt(process.env.VIDEO_AI_SCENES || '3', 10);
     let animatedScenes = 0;
     const assemblyScenes: AssemblyScene[] = [];
@@ -252,8 +324,8 @@ export class SaintPostPipeline {
         overlay: scenes[i].text_overlay || '',
       });
     }
-    const flagged = this.visualService.report.qa.flagged;
-    if (flagged.length) notes.push(`The image inspector still saw a visible flaw in: ${flagged.join(', ')} (after ${this.visualService.report.qa.retried} regeneration(s))`);
+    const flagged = report.qa.flagged;
+    if (flagged.length) notes.push(`The image inspector still saw a visible flaw in: ${flagged.join(', ')} (after ${report.qa.retried} regeneration(s))`);
     if (reusedScenes.length) notes.push(`${reusedScenes.length} scene(s) reused an earlier image (${reusedScenes.join(', ')}) because the image services ran out of credit/quota`);
     console.log(`✅ Step 6: ${assemblyScenes.length} video clips generated`);
     progress('🎬 Assembling the final video...');
@@ -272,12 +344,7 @@ export class SaintPostPipeline {
     console.log(`✅ Step 7: Final 9:16 MP4 Video Rendered -> ${finalVideoUrl}`);
     let projectId: number | undefined;
     if (snapshot) {
-      const manifest: Manifest = {
-        saint: { name: saint.name, feast_month: saint.feast_month, feast_day: saint.feast_day, appearance: saint.appearance, reference_image_url: saint.reference_image_url },
-        lang: targetLang, length: preset.id, romanSubs: wantRoman, version: 1,
-        scenes: scenes.map(sc => ({ voiceover: sc.voiceover, subtitle: sc.subtitle, overlay: sc.text_overlay || '', visual: sc.visual, image_prompt: sc.image_prompt, safe_prompt: sc.safe_prompt, must_include: sc.must_include, risk: sc.risk, uses_main: sc.uses_main })),
-        caption: content.caption, hashtags: content.hashtags,
-      };
+      const manifest = toManifest(stage);
       projectId = await projectService.create(manifest, snapshot, finalVideoUrl, coverImageUrl).catch((e: any) => {
         console.warn('⚠️ Could not save the editable project:', e.message);
         return undefined;
@@ -337,8 +404,28 @@ export class SaintPostPipeline {
       notes,
       sceneCount: assemblyScenes.length,
       animatedScenes,
-      qa: this.visualService.report.qa,
+      qa: report.qa,
       projectId,
     };
   }
+}
+
+/** The editable form of a script (also what is saved with a finished video). */
+export function toManifest(stage: ScriptStage): Manifest {
+  const { saint, lang, preset, wantRoman, content } = stage;
+  return {
+    saint: { name: saint.name, feast_month: saint.feast_month, feast_day: saint.feast_day, appearance: saint.appearance, reference_image_url: saint.reference_image_url },
+    lang, length: preset.id, romanSubs: wantRoman, version: 1,
+    scenes: content.video_script.map(sc => ({ voiceover: sc.voiceover, subtitle: sc.subtitle, overlay: sc.text_overlay || '', visual: sc.visual, image_prompt: sc.image_prompt, safe_prompt: sc.safe_prompt, must_include: sc.must_include, risk: sc.risk, uses_main: sc.uses_main })),
+    caption: content.caption, hashtags: content.hashtags,
+  };
+}
+
+/** The reverse: an (edited) manifest written back into the script the pipeline builds from. */
+export function withManifest<T extends ScriptStage>(stage: T, m: Manifest): T {
+  const video_script = stage.content.video_script.map((sc, i) => {
+    const e = m.scenes[i];
+    return { ...sc, voiceover: e.voiceover, subtitle: e.subtitle, text_overlay: e.overlay, image_prompt: e.image_prompt, safe_prompt: e.safe_prompt, must_include: e.must_include };
+  });
+  return { ...stage, content: { ...stage.content, video_script, caption: m.caption, hashtags: m.hashtags } };
 }
