@@ -106,23 +106,24 @@ export const cloudflareKlein: ImageProvider = {
   },
 };
 
-/** Workers AI FLUX.1 schnell: cheaper per image (~70 neurons for a 9:16 frame), text-to-image only. */
+/**
+ * Workers AI FLUX.1 schnell: cheapest per image, text-to-image only. The model accepts ONLY `prompt` and `steps`
+ * (seed / width / height are rejected with 400 "Additional or unevaluated properties") and always answers with a
+ * square 1024x1024 image; the caller's scale+crop turns it into the 9:16 frame.
+ */
+const SCHNELL_STEPS = 4; // the model allows at most 8
+const SCHNELL_SIDE = 1024;
 export const cloudflareFlux: ImageProvider = {
   id: 'cf-flux', label: 'Cloudflare FLUX.1 schnell', tier: 'standard', mode: 'text',
   enabled: on,
-  async generate({ prompt, shape, seed }) {
-    const { w, h } = capped(shape, 1344);
-    const post = (body: any) => axios.post(`${base()}/@cf/black-forest-labs/flux-1-schnell`, body, { headers: auth(), responseType: 'arraybuffer', timeout: 90000 });
-    let res;
-    try {
-      res = await post({ prompt: prompt.slice(0, 2000), steps: 4, seed, width: w, height: h });
-    } catch (e: any) {
-      // Some model builds reject width/height: they can then only make square images.
-      if (e.response?.status === 400 && shape.aspect === '1:1') res = await post({ prompt: prompt.slice(0, 2000), steps: 4, seed });
-      else throw e;
-    }
+  async generate({ prompt }) {
+    const res = await axios.post(
+      `${base()}/@cf/black-forest-labs/flux-1-schnell`,
+      { prompt: prompt.slice(0, 2000), steps: SCHNELL_STEPS },
+      { headers: auth(), responseType: 'arraybuffer', timeout: 90000 }
+    );
     const img = extractImage(res);
-    spend(schnellCost(w, h, 4));
+    spend(schnellCost(SCHNELL_SIDE, SCHNELL_SIDE, SCHNELL_STEPS));
     return img;
   },
 };
